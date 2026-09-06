@@ -1,6 +1,6 @@
 [package]
 name = "fmemos"
-version = "0.3.1"
+version = "0.4.0"
 description = "FMemos - flomo 风格的本地卡片笔记"
 authors = ["you"]
 edition = "2021"
@@ -25,10 +25,12 @@ codegen-units = 32
 strip = true
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
 tauri-plugin-global-shortcut = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.37", features = ["bundled", "backup"] }
 

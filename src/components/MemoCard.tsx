@@ -7,13 +7,33 @@ import type { Memo } from "../lib/types";
 interface Props {
   memo: Memo;
   allTags: string[];
+  /** 搜索结果高亮关键词 */
+  highlight?: string[];
+  /** 受控编辑态：App 用 editingId 统一管理（回顾弹窗也能发起编辑） */
+  editing: boolean;
+  onSetEditing: (id: number | null) => void;
+  /** 回收站模式：展示 恢复 / 彻底删除 而非 编辑 / 删除 */
+  trash?: boolean;
+  onRestore?: (id: number) => void;
+  onPurge?: (id: number) => void;
   onTagClick: (tag: string) => void;
   onUpdate: (id: number, content: string) => Promise<void>;
   onDelete: (id: number) => Promise<void>;
 }
 
-function MemoCard({ memo, allTags, onTagClick, onUpdate, onDelete }: Props) {
-  const [editing, setEditing] = useState(false);
+function MemoCard({
+  memo,
+  allTags,
+  highlight,
+  editing,
+  onSetEditing,
+  trash,
+  onRestore,
+  onPurge,
+  onTagClick,
+  onUpdate,
+  onDelete,
+}: Props) {
   const [draft, setDraft] = useState(memo.content);
   const [overflowing, setOverflowing] = useState(false); // 内容是否超过两行
   const [expanded, setExpanded] = useState(false);
@@ -29,9 +49,14 @@ function MemoCard({ memo, allTags, onTagClick, onUpdate, onDelete }: Props) {
     return () => window.removeEventListener("resize", check);
   }, [memo.content]);
 
+  // 进入编辑（含回顾弹窗发起）时，以最新正文为草稿
+  useEffect(() => {
+    if (editing) setDraft(memo.content);
+  }, [editing]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const cancel = () => {
     setDraft(memo.content);
-    setEditing(false);
+    onSetEditing(null);
   };
 
   const save = async () => {
@@ -39,7 +64,7 @@ function MemoCard({ memo, allTags, onTagClick, onUpdate, onDelete }: Props) {
     if (!text) return;
     try {
       await onUpdate(memo.id, text);
-      setEditing(false);
+      onSetEditing(null);
     } catch {
       // 错误横幅已由 App 展示，保留编辑状态
     }
@@ -55,12 +80,12 @@ function MemoCard({ memo, allTags, onTagClick, onUpdate, onDelete }: Props) {
 
   // Markdown 渲染结果按内容记忆化：父级重渲染而正文未变时不再重新解析
   const body = useMemo(
-    () => renderMarkdown(memo.content, { onTagClick, onToggleTodo: handleToggleTodo }),
-    [memo.content, onTagClick, handleToggleTodo],
+    () => renderMarkdown(memo.content, { onTagClick, onToggleTodo: handleToggleTodo, highlight }),
+    [memo.content, onTagClick, handleToggleTodo, highlight],
   );
 
   return (
-    <div className="memo-card">
+    <div className="memo-card" data-memo-id={memo.id}>
       {!editing && overflowing && (
         <button
           className="memo-expand"
@@ -103,18 +128,36 @@ function MemoCard({ memo, allTags, onTagClick, onUpdate, onDelete }: Props) {
           <div className="memo-meta">
             <span title={memo.createdAt}>{formatTime(memo.createdAt)}</span>
             <span className="memo-ops">
-              <button onClick={() => setEditing(true)}>编辑</button>
-              <button
-                className="danger"
-                onClick={() => {
-                  if (confirm("删除这条 memo？")) {
-                    // 失败时错误横幅已由 App 展示
-                    void onDelete(memo.id).catch(() => {});
-                  }
-                }}
-              >
-                删除
-              </button>
+              {trash ? (
+                <>
+                  <button onClick={() => onRestore?.(memo.id)}>恢复</button>
+                  <button
+                    className="danger"
+                    onClick={() => {
+                      if (confirm("彻底删除这条 memo？不可恢复！")) {
+                        onPurge?.(memo.id);
+                      }
+                    }}
+                  >
+                    彻底删除
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button onClick={() => onSetEditing(memo.id)}>编辑</button>
+                  <button
+                    className="danger"
+                    onClick={() => {
+                      if (confirm("删除这条 memo？")) {
+                        // 失败时错误横幅已由 App 展示
+                        void onDelete(memo.id).catch(() => {});
+                      }
+                    }}
+                  >
+                    删除
+                  </button>
+                </>
+              )}
             </span>
           </div>
         </>

@@ -15,7 +15,14 @@ interface Props {
   onSelectTag: (tag: string) => void;
   onSelectUntagged: () => void;
   onSelectDate: (date: string | null) => void;
-  onReview: (mode: "random" | "daily") => void;
+  onReview: (mode: "random" | "daily" | "history") => void;
+  /** 「那年今日」候选数量，>0 时展示入口 */
+  historyCount: number;
+  /** 回收站数量，>0 时展示入口；trashActive 时高亮 */
+  trashCount: number;
+  trashActive: boolean;
+  onOpenTrash: () => void;
+  onOpenSettings: () => void;
 }
 
 function Sidebar({
@@ -31,6 +38,11 @@ function Sidebar({
   onSelectUntagged,
   onSelectDate,
   onReview,
+  historyCount,
+  trashCount,
+  trashActive,
+  onOpenTrash,
+  onOpenSettings,
 }: Props) {
   // 记录被展开的节点路径；默认全部收起，点开的层级在新笔记进来后保持展开
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -59,6 +71,12 @@ function Sidebar({
             <button className="side-item" onClick={() => onReview("daily")}>
               每日回顾
             </button>
+            {historyCount > 0 && (
+              <button className="side-item" onClick={() => onReview("history")}>
+                那年今日
+                <span className="side-count">{historyCount}</span>
+              </button>
+            )}
           </>
         )}
 
@@ -74,6 +92,16 @@ function Sidebar({
           无标签
           <span className="side-count">{untaggedCount}</span>
         </button>
+
+        {trashCount > 0 && (
+          <button
+            className={"side-item" + (trashActive ? " active" : "")}
+            onClick={onOpenTrash}
+          >
+            回收站
+            <span className="side-count">{trashCount}</span>
+          </button>
+        )}
 
         {tags.length > 0 && <div className="side-section">标签</div>}
         <TagTree
@@ -91,6 +119,12 @@ function Sidebar({
           </div>
         )}
       </nav>
+      <div className="side-footer">
+        <button className="side-item" onClick={onOpenSettings}>
+          <span className="theme-icon">⚙️</span>
+          设置
+        </button>
+      </div>
     </aside>
   );
 }

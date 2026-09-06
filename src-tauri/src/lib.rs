@@ -2,18 +2,28 @@ mod commands;
 mod db;
 mod tags;
 
-use tauri::Manager;
+use tauri::{
+    menu::{CheckMenuItem, Menu, MenuItem},
+    tray::TrayIconBuilder,
+    Manager,
+};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .setup(|app| {
             let conn = db::init().expect("failed to initialize database");
             app.manage(db::Db(std::sync::Mutex::new(conn)));
 
             #[cfg(desktop)]
             {
+                use tauri_plugin_autostart::ManagerExt;
                 use tauri_plugin_global_shortcut::{
                     Builder as ShortcutBuilder, Code, Modifiers, ShortcutState,
                 };
@@ -31,21 +41,86 @@ pub fn run() {
                         })
                         .build(),
                 )?;
+
+                // 托盘：左键切换窗口，菜单提供 显示/隐藏、开机自启、退出
+                let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
+                let toggle_item =
+                    MenuItem::with_id(app, "toggle", "显示 / 隐藏 (Ctrl+Shift+M)", true, None::<&str>)?;
+                let autostart_item = CheckMenuItem::with_id(
+                    app,
+                    "autostart",
+                    "开机自启",
+                    true,
+                    autostart_enabled,
+                    None::<&str>,
+                )?;
+                let quit_item = MenuItem::with_id(app, "quit", "退出 FMemos", true, None::<&str>)?;
+                let menu = Menu::with_items(app, &[&toggle_item, &autostart_item, &quit_item])?;
+
+                let autostart_handle = autostart_item.clone();
+                TrayIconBuilder::with_id("main")
+                    .icon(app.default_window_icon().expect("missing app icon").clone())
+                    .tooltip("FMemos")
+                    .menu(&menu)
+                    .show_menu_on_left_click(false)
+                    .on_menu_event(move |app, event| match event.id.as_ref() {
+                        "toggle" => toggle_main_window(app),
+                        "autostart" => {
+                            let launcher = app.autolaunch();
+                            let next = match launcher.is_enabled() {
+                                Ok(true) => {
+                                    let _ = launcher.disable();
+                                    false
+                                }
+                                _ => {
+                                    let _ = launcher.enable();
+                                    true
+                                }
+                            };
+                            let _ = autostart_handle.set_checked(next);
+                        }
+                        "quit" => app.exit(0),
+                        _ => {}
+                    })
+                    .on_tray_icon_event(|tray, event| {
+                        if let tauri::tray::TrayIconEvent::Click {
+                            button: tauri::tray::MouseButton::Left,
+                            button_state: tauri::tray::MouseButtonState::Up,
+                            ..
+                        } = event
+                        {
+                            toggle_main_window(tray.app_handle());
+                        }
+                    })
+                    .build(app)?;
             }
 
             Ok(())
+        })
+        // 关闭窗口 = 隐藏到托盘，真正退出走托盘菜单的「退出」
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::create_memo,
             commands::list_memos,
             commands::update_memo,
             commands::delete_memo,
+            commands::restore_memo,
+            commands::purge_memo,
+            commands::empty_trash,
+            commands::export_markdown,
+            commands::export_to,
+            commands::open_backup_dir,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
 
-/// Ctrl+Shift+M：窗口可见且聚焦时隐藏，否则呼出并聚焦；
+/// Ctrl+Shift+M / 托盘：窗口可见且聚焦时隐藏，否则呼出并聚焦；
 /// 呼出时发 quick-open 事件，前端聚焦顶部输入框。
 #[cfg(desktop)]
 fn toggle_main_window(app: &tauri::AppHandle) {

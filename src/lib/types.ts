@@ -13,3 +13,7 @@ export interface TagNode {
   count: number;
   children: TagNode[];
 }
+
+/** 外观主题：浅色 / 深色 / 跟随系统 */
+export type ThemeMode = "light" | "dark" | "system";
+

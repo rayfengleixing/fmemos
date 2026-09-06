@@ -184,22 +184,54 @@ export function parseBlocks(content: string): Block[] {
   return blocks;
 }
 
-/** **加粗** 解析（在标签切分之后、不含代码段与链接的文本上执行） */
-function renderBold(text: string): ReactNode[] {
+/** 纯函数：把文本按高亮关键词切成段（hit 标记是否命中），不区分大小写 */
+export function splitHighlight(
+  text: string,
+  terms: string[],
+): { text: string; hit: boolean }[] {
+  const valid = terms.filter((t) => t);
+  if (valid.length === 0) return [{ text, hit: false }];
+  const escaped = valid.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const re = new RegExp(`(${escaped.join("|")})`, "gi");
+  const lowered = valid.map((t) => t.toLowerCase());
+  return text
+    .split(re)
+    .filter((p) => p !== "")
+    .map((p) => ({ text: p, hit: lowered.includes(p.toLowerCase()) }));
+}
+
+/** 高亮拆分渲染：命中片段包 <mark>，其余原样 */
+function renderHighlight(text: string, highlight?: string[]): ReactNode[] {
+  if (!highlight?.length) return [text];
+  return splitHighlight(text, highlight).map((seg, i) =>
+    seg.hit ? <mark key={i}>{seg.text}</mark> : <Fragment key={i}>{seg.text}</Fragment>,
+  );
+}
+
+/** **加粗** + 高亮解析（在标签切分之后、不含代码段与链接的文本上执行） */
+function renderBold(text: string, highlight?: string[]): ReactNode[] {
   const nodes: ReactNode[] = [];
   let last = 0;
   for (const m of text.matchAll(BOLD_RE)) {
     const idx = m.index ?? 0;
-    if (idx > last) nodes.push(text.slice(last, idx));
-    nodes.push(<strong key={idx}>{m[1]}</strong>);
+    if (idx > last) {
+      nodes.push(
+        <Fragment key={`t${idx}`}>{renderHighlight(text.slice(last, idx), highlight)}</Fragment>,
+      );
+    }
+    nodes.push(<strong key={idx}>{renderHighlight(m[1], highlight)}</strong>);
     last = idx + m[0].length;
   }
-  if (last < text.length) nodes.push(text.slice(last));
+  if (last < text.length) {
+    nodes.push(
+      <Fragment key={`t${last}`}>{renderHighlight(text.slice(last), highlight)}</Fragment>,
+    );
+  }
   return nodes;
 }
 
 /** URL 切分 + **加粗**：链接优先，链接之间的文本再解析加粗（均在标签切分之后执行） */
-function renderLinks(text: string): ReactNode[] {
+function renderLinks(text: string, highlight?: string[]): ReactNode[] {
   return splitLinks(text).map((part, i) =>
     part.kind === "link" ? (
       <a
@@ -214,13 +246,13 @@ function renderLinks(text: string): ReactNode[] {
         {part.value}
       </a>
     ) : (
-      <Fragment key={`t${i}`}>{renderBold(part.value)}</Fragment>
+      <Fragment key={`t${i}`}>{renderBold(part.value, highlight)}</Fragment>
     ),
   );
 }
 
 /** #标签 切分 + 链接/加粗；行内代码段在更外层处理，内部保持字面 */
-function renderText(text: string, onTagClick?: TagClick): ReactNode[] {
+function renderText(text: string, onTagClick?: TagClick, highlight?: string[]): ReactNode[] {
   return text.split(TAG_SPLIT_RE).map((part, i) => {
     if (TAG_FULL_RE.test(part)) {
       return (
@@ -229,19 +261,21 @@ function renderText(text: string, onTagClick?: TagClick): ReactNode[] {
         </span>
       );
     }
-    return <Fragment key={i}>{renderLinks(part)}</Fragment>;
+    return <Fragment key={i}>{renderLinks(part, highlight)}</Fragment>;
   });
 }
 
 /** 单行渲染：先按 `行内代码` 切分，代码保持字面，其余文本做标签+加粗解析 */
-function renderLine(line: string, onTagClick?: TagClick): ReactNode[] {
+function renderLine(line: string, onTagClick?: TagClick, highlight?: string[]): ReactNode[] {
   const nodes: ReactNode[] = [];
   let last = 0;
   for (const m of line.matchAll(INLINE_CODE_RE)) {
     const idx = m.index ?? 0;
     if (idx > last) {
       nodes.push(
-        <Fragment key={`t${idx}`}>{renderText(line.slice(last, idx), onTagClick)}</Fragment>,
+        <Fragment key={`t${idx}`}>
+          {renderText(line.slice(last, idx), onTagClick, highlight)}
+        </Fragment>,
       );
     }
     nodes.push(<code key={`c${idx}`}>{m[1]}</code>);
@@ -249,7 +283,7 @@ function renderLine(line: string, onTagClick?: TagClick): ReactNode[] {
   }
   if (last < line.length) {
     nodes.push(
-      <Fragment key={`t${last}`}>{renderText(line.slice(last), onTagClick)}</Fragment>,
+      <Fragment key={`t${last}`}>{renderText(line.slice(last), onTagClick, highlight)}</Fragment>,
     );
   }
   return nodes;
@@ -259,6 +293,7 @@ export function renderBlocks(
   blocks: Block[],
   onTagClick?: TagClick,
   onToggleTodo?: TodoToggle,
+  highlight?: string[],
 ): ReactNode {
   // 全篇 TODO 顺序号：供勾选回写正文时定位（与 toggleTodo 计数一致）
   let todoOffset = 0;
@@ -272,7 +307,7 @@ export function renderBlocks(
             {block.lines.map((line, j) => (
               <Fragment key={j}>
                 {j > 0 && <br />}
-                {renderLine(line, onTagClick)}
+                {renderLine(line, onTagClick, highlight)}
               </Fragment>
             ))}
           </p>
@@ -281,7 +316,7 @@ export function renderBlocks(
         return (
           <ul key={i}>
             {block.lines.map((item, j) => (
-              <li key={j}>{renderLine(item, onTagClick)}</li>
+              <li key={j}>{renderLine(item, onTagClick, highlight)}</li>
             ))}
           </ul>
         );
@@ -289,7 +324,7 @@ export function renderBlocks(
         return (
           <ol key={i}>
             {block.lines.map((item, j) => (
-              <li key={j}>{renderLine(item, onTagClick)}</li>
+              <li key={j}>{renderLine(item, onTagClick, highlight)}</li>
             ))}
           </ol>
         );
@@ -307,7 +342,7 @@ export function renderBlocks(
                 >
                   {item.done ? "✓" : ""}
                 </span>
-                <span className="todo-text">{renderLine(item.text, onTagClick)}</span>
+                <span className="todo-text">{renderLine(item.text, onTagClick, highlight)}</span>
               </li>
             ))}
           </ul>
@@ -326,8 +361,10 @@ export interface RenderOptions {
   onTagClick?: TagClick;
   /** 传入后卡片内 TODO 复选框可点击切换；回顾弹窗等只读场景省略 */
   onToggleTodo?: TodoToggle;
+  /** 搜索结果高亮：这些关键词（不区分大小写）用 <mark> 标出；代码与链接内不高亮 */
+  highlight?: string[];
 }
 
 export function renderMarkdown(content: string, opts: RenderOptions = {}): ReactNode {
-  return renderBlocks(parseBlocks(content), opts.onTagClick, opts.onToggleTodo);
+  return renderBlocks(parseBlocks(content), opts.onTagClick, opts.onToggleTodo, opts.highlight);
 }

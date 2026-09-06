@@ -1,6 +1,28 @@
 import { describe, expect, it } from "vitest";
-import { listEnterAction, parseBlocks, splitLinks, toggleTodo, trimUrl } from "./md";
+import { listEnterAction, parseBlocks, splitHighlight, splitLinks, toggleTodo, trimUrl } from "./md";
 import { TAG_FULL_RE, TAG_PARTIAL_RE } from "./tags";
+
+describe("splitHighlight", () => {
+  it("按关键词切分并标记命中（不区分大小写）", () => {
+    expect(splitHighlight("Hello World", ["world"])).toEqual([
+      { text: "Hello ", hit: false },
+      { text: "World", hit: true },
+    ]);
+  });
+
+  it("多关键词同时生效，支持正则特殊字符", () => {
+    expect(splitHighlight("a.b c", ["a.b", "c"])).toEqual([
+      { text: "a.b", hit: true },
+      { text: " ", hit: false },
+      { text: "c", hit: true },
+    ]);
+  });
+
+  it("无关键词或无命中时原样返回", () => {
+    expect(splitHighlight("hello", [])).toEqual([{ text: "hello", hit: false }]);
+    expect(splitHighlight("hello", ["xyz"])).toEqual([{ text: "hello", hit: false }]);
+  });
+});
 
 describe("parseBlocks", () => {
   it("段落与多行", () => {

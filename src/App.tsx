@@ -4,25 +4,37 @@ import "./App.css";
 import Editor from "./components/Editor";
 import MemoCard from "./components/MemoCard";
 import ReviewModal from "./components/ReviewModal";
+import SettingsModal from "./components/SettingsModal";
 import Sidebar from "./components/Sidebar";
 import * as api from "./lib/api";
 import { dateHeaderLabel, toDateKey } from "./lib/format";
 import { buildTagTree, extractTags } from "./lib/tags";
-import type { Memo, TagNode } from "./lib/types";
+import type { Memo, TagNode, ThemeMode } from "./lib/types";
 
 /** 卡片流分页大小：滚动到底部附近自动加载下一页 */
 const PAGE_SIZE = 50;
 
-interface ReviewState {
-  mode: "random" | "daily";
-  memo: Memo;
+const THEME_KEY = "fmemos.theme";
+
+interface ToastState {
+  text: string;
+  actionLabel?: string;
+  action?: () => void;
 }
 
-/** 随机：真随机；每日：以日期字符串为种子的确定性选取，同一天刷新不变 */
-function pickReview(memos: Memo[], mode: "random" | "daily"): Memo {
-  if (mode === "random") {
-    return memos[Math.floor(Math.random() * memos.length)];
-  }
+interface ReviewState {
+  mode: "random" | "daily" | "history";
+  memo: Memo;
+  /** 「换一条」的候选池（随机=全部笔记，那年今日=同年同日历史） */
+  candidates?: Memo[];
+}
+
+function pickRandom(memos: Memo[]): Memo {
+  return memos[Math.floor(Math.random() * memos.length)];
+}
+
+/** 每日回顾：以日期字符串为种子的确定性选取，同一天刷新不变 */
+function pickDaily(memos: Memo[]): Memo {
   const key = toDateKey(new Date());
   let hash = 0;
   for (const ch of key) {
@@ -42,6 +54,34 @@ export default function App() {
   const [focusSignal, setFocusSignal] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [trashView, setTrashView] = useState(false);
+  const [trashMemos, setTrashMemos] = useState<Memo[]>([]);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [toast, setToast] = useState<ToastState | null>(null);
+  const toastTimer = useRef<number | undefined>(undefined);
+
+  /** 底部浮条：6 秒自动消失，可带一个操作按钮（如撤销） */
+  const showToast = useCallback((text: string, actionLabel?: string, action?: () => void) => {
+    setToast({ text, actionLabel, action });
+    window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(null), 6000);
+  }, []);
+
+  // 外观主题：浅色 / 深色 / 跟随系统（写 data-theme 属性，CSS 变量切换）
+  const [theme, setTheme] = useState<ThemeMode>(() => {
+    const saved = localStorage.getItem(THEME_KEY);
+    return saved === "light" || saved === "dark" ? saved : "system";
+  });
+  useEffect(() => {
+    if (theme === "system") delete document.documentElement.dataset.theme;
+    else document.documentElement.dataset.theme = theme;
+    try {
+      localStorage.setItem(THEME_KEY, theme);
+    } catch {
+      // localStorage 不可用时忽略
+    }
+  }, [theme]);
 
   // 搜索防抖：停止输入 150ms 后才触发过滤查询
   const [debouncedQuery, setDebouncedQuery] = useState("");
@@ -50,9 +90,21 @@ export default function App() {
     return () => clearTimeout(t);
   }, [query]);
 
+  // 搜索结果高亮关键词（与后端查询同源：空白拆分多关键词）
+  const searchTerms = useMemo(
+    () => (debouncedQuery.trim() ? debouncedQuery.trim().split(/\s+/).filter(Boolean) : undefined),
+    [debouncedQuery],
+  );
+
   // 回调引用保持稳定的专用 ref：fetch/loadMore 从 ref 读最新值，
   // 避免回调身份随筛选变化，让 React.memo 在输入过程中持续生效
-  const filtersRef = useRef({ tag: activeTag, query: debouncedQuery, untagged, date: activeDate });
+  const filtersRef = useRef({
+    tag: activeTag,
+    query: debouncedQuery,
+    untagged,
+    date: activeDate,
+    trash: trashView,
+  });
   const memosRef = useRef<Memo[]>([]);
   const hasMoreRef = useRef(false);
   const loadingMoreRef = useRef(false);
@@ -83,6 +135,7 @@ export default function App() {
         query: f.query.trim() || null,
         untagged: f.untagged,
         date: f.date,
+        trash: f.trash,
         limit: PAGE_SIZE,
       });
       if (epoch !== filterEpoch.current) return;
@@ -111,6 +164,7 @@ export default function App() {
         query: f.query.trim() || null,
         untagged: f.untagged,
         date: f.date,
+        trash: f.trash,
         limit: PAGE_SIZE,
         before: { createdAt: last.createdAt, id: last.id },
       });
@@ -128,10 +182,18 @@ export default function App() {
     }
   }, []);
 
-  // 增删改后两侧都要刷新
+  // 增删改后两侧都要刷新；回收站计数随 refresh 一并更新
+  const fetchTrash = useCallback(async () => {
+    try {
+      setTrashMemos(await api.listMemos({ trash: true }));
+    } catch {
+      // 回收站计数失败不打扰主流程
+    }
+  }, []);
+
   const refresh = useCallback(
-    () => Promise.all([fetchAll(), fetchFiltered()]),
-    [fetchAll, fetchFiltered],
+    () => Promise.all([fetchAll(), fetchFiltered(), fetchTrash()]),
+    [fetchAll, fetchFiltered, fetchTrash],
   );
 
   useEffect(() => {
@@ -140,9 +202,15 @@ export default function App() {
 
   useEffect(() => {
     // 先同步 ref 再拉取：同一次提交里保证 fetch 读到最新筛选
-    filtersRef.current = { tag: activeTag, query: debouncedQuery, untagged, date: activeDate };
+    filtersRef.current = {
+      tag: activeTag,
+      query: debouncedQuery,
+      untagged,
+      date: activeDate,
+      trash: trashView,
+    };
     void fetchFiltered();
-  }, [activeTag, debouncedQuery, untagged, activeDate, fetchFiltered]);
+  }, [activeTag, debouncedQuery, untagged, activeDate, trashView, fetchFiltered]);
 
   // 全局快捷键 Ctrl+Shift+M 呼出窗口时，后端发 quick-open，前端聚焦输入框
   useEffect(() => {
@@ -184,44 +252,115 @@ export default function App() {
       try {
         await api.deleteMemo(id);
         await refresh();
+        showToast("已移入回收站", "撤销", () => {
+          setToast(null);
+          api
+            .restoreMemo(id)
+            .then(() => refresh())
+            .catch((e) => setError(`恢复失败：${e}`));
+        });
       } catch (e) {
         setError(`删除失败：${e}`);
         throw e;
       }
     },
+    [refresh, showToast],
+  );
+
+  // 回收站操作
+  const openTrash = useCallback(() => {
+    setActiveTag(null);
+    setActiveDate(null);
+    setUntagged(false);
+    setQuery("");
+    setTrashView(true);
+  }, []);
+
+  const handleRestore = useCallback(
+    (id: number) => {
+      api
+        .restoreMemo(id)
+        .then(() => refresh())
+        .then(() => showToast("已恢复"))
+        .catch((e) => setError(`恢复失败：${e}`));
+    },
+    [refresh, showToast],
+  );
+
+  const handlePurge = useCallback(
+    (id: number) => {
+      api
+        .purgeMemo(id)
+        .then(() => refresh())
+        .catch((e) => setError(`删除失败：${e}`));
+    },
     [refresh],
   );
 
+  const handleEmptyTrash = useCallback(() => {
+    if (trashMemos.length === 0) return;
+    if (!confirm(`清空回收站的 ${trashMemos.length} 条？不可恢复！`)) return;
+    api
+      .emptyTrash()
+      .then((n) => refresh().then(() => showToast(`已清空 ${n} 条`)))
+      .catch((e) => setError(`清空失败：${e}`));
+  }, [trashMemos.length, refresh, showToast]);
+
   const selectAll = useCallback(() => {
     setActiveTag(null);
-    setUntagged(false);
     setActiveDate(null);
+    setUntagged(false);
+    setTrashView(false);
   }, []);
 
   const selectTag = useCallback((tag: string) => {
     setActiveTag(tag);
-    setUntagged(false);
     setActiveDate(null);
+    setUntagged(false);
+    setTrashView(false);
   }, []);
 
   const selectUntagged = useCallback(() => {
     setActiveTag(null);
-    setUntagged(true);
     setActiveDate(null);
+    setUntagged(true);
+    setTrashView(false);
   }, []);
 
   const selectDate = useCallback((date: string | null) => {
     setActiveDate(date);
     setActiveTag(null);
     setUntagged(false);
+    setTrashView(false);
   }, []);
 
+  // 「那年今日」候选：往年同月同日创建的笔记（倒序）
+  const historyCandidates = useMemo(() => {
+    const now = new Date();
+    const md = `${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    const year = now.getFullYear();
+    return allMemos
+      .filter(
+        (m) => m.createdAt.slice(5, 10) === md && Number(m.createdAt.slice(0, 4)) < year,
+      )
+      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+  }, [allMemos]);
+
   const openReview = useCallback(
-    (mode: "random" | "daily") => {
+    (mode: "random" | "daily" | "history") => {
+      if (mode === "history") {
+        if (historyCandidates.length === 0) return;
+        setReview({ mode, memo: pickRandom(historyCandidates), candidates: historyCandidates });
+        return;
+      }
       if (allMemos.length === 0) return;
-      setReview({ mode, memo: pickReview(allMemos, mode) });
+      setReview({
+        mode,
+        memo: mode === "random" ? pickRandom(allMemos) : pickDaily(allMemos),
+        candidates: mode === "random" ? allMemos : undefined,
+      });
     },
-    [allMemos],
+    [allMemos, historyCandidates],
   );
 
   const handleReviewTag = useCallback(
@@ -231,6 +370,17 @@ export default function App() {
     },
     [selectTag],
   );
+
+  // 回顾弹窗「编辑」：关闭弹窗，滚动到对应卡片并进入编辑
+  const editFromReview = useCallback((id: number) => {
+    setReview(null);
+    setEditingId(id);
+    setTimeout(() => {
+      document
+        .querySelector(`[data-memo-id="${id}"]`)
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 60);
+  }, []);
 
   const mainRef = useRef<HTMLElement>(null);
   const handleMainScroll = useCallback(() => {
@@ -267,6 +417,15 @@ export default function App() {
     return map;
   }, [allMemos]);
 
+  // 回顾弹窗标题
+  const reviewTitle = review
+    ? review.mode === "daily"
+      ? "每日回顾"
+      : review.mode === "random"
+        ? "随机回顾"
+        : `${new Date().getFullYear() - Number(review.memo.createdAt.slice(0, 4))} 年前的今天`
+    : "";
+
   // 卡片流按创建日期分组（list_memos 已按时间倒序，相邻即同组；分页追加的同日笔记也会合并）
   const groups = useMemo(() => {
     const out: { key: string; label: string; memos: Memo[] }[] = [];
@@ -297,6 +456,11 @@ export default function App() {
         onSelectUntagged={selectUntagged}
         onSelectDate={selectDate}
         onReview={openReview}
+        historyCount={historyCandidates.length}
+        trashCount={trashMemos.length}
+        trashActive={trashView}
+        onOpenTrash={openTrash}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
       <main className="main" ref={mainRef} onScroll={handleMainScroll}>
         <div className="main-inner">
@@ -311,11 +475,29 @@ export default function App() {
 
           {error && <div className="error-banner">{error}</div>}
 
-          <Editor onCreate={handleCreate} focusSignal={focusSignal} allTags={allTags} />
+          {trashView && (
+            <div className="trash-header">
+              <span>
+                回收站 · {trashMemos.length} 条
+                <span className="trash-hint">（删除的笔记在这里保留，可恢复）</span>
+              </span>
+              {trashMemos.length > 0 && (
+                <button className="btn-ghost" onClick={handleEmptyTrash}>
+                  清空回收站
+                </button>
+              )}
+            </div>
+          )}
+
+          {!trashView && (
+            <Editor onCreate={handleCreate} focusSignal={focusSignal} allTags={allTags} />
+          )}
 
           {memos.length === 0 ? (
             <div className="empty-state">
-              {allMemos.length === 0 ? (
+              {trashView ? (
+                "回收站是空的"
+              ) : allMemos.length === 0 ? (
                 <>
                   空空如也
                   <br />
@@ -337,6 +519,12 @@ export default function App() {
                     key={memo.id}
                     memo={memo}
                     allTags={allTags}
+                    highlight={searchTerms}
+                    editing={editingId === memo.id}
+                    onSetEditing={setEditingId}
+                    trash={trashView}
+                    onRestore={handleRestore}
+                    onPurge={handlePurge}
                     onTagClick={selectTag}
                     onUpdate={handleUpdate}
                     onDelete={handleDelete}
@@ -350,12 +538,42 @@ export default function App() {
         </div>
       </main>
 
+      {toast && (
+        <div className="toast">
+          <span>{toast.text}</span>
+          {toast.actionLabel && (
+            <button
+              onClick={() => {
+                toast.action?.();
+              }}
+            >
+              {toast.actionLabel}
+            </button>
+          )}
+        </div>
+      )}
+
+      {settingsOpen && (
+        <SettingsModal
+          theme={theme}
+          onThemeChange={setTheme}
+          notify={showToast}
+          onClose={() => setSettingsOpen(false)}
+        />
+      )}
+
       {review && (
         <ReviewModal
-          mode={review.mode}
+          title={reviewTitle}
           memo={review.memo}
+          showAnother={review.mode !== "daily"}
           onClose={() => setReview(null)}
-          onAnother={() => setReview({ mode: "random", memo: pickReview(allMemos, "random") })}
+          onAnother={() =>
+            setReview((r) =>
+              r ? { ...r, memo: pickRandom(r.candidates ?? [r.memo]) } : null,
+            )
+          }
+          onEdit={() => editFromReview(review.memo.id)}
           onTagClick={handleReviewTag}
         />
       )}
