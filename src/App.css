@@ -645,6 +645,12 @@ nav .side-section:first-child {
   margin-top: 18px;
 }
 
+.settings-about {
+  margin-bottom: 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
 .settings-label {
   font-size: 13px;
   font-weight: 600;

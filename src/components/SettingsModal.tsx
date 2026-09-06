@@ -1,4 +1,5 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 import * as api from "../lib/api";
 import type { ThemeMode } from "../lib/types";
 
@@ -17,6 +18,14 @@ interface Props {
 }
 
 export default function SettingsModal({ theme, onThemeChange, notify, onClose }: Props) {
+  const [appVersion, setAppVersion] = useState("");
+  useEffect(() => {
+    // 浏览器调试模式没有该命令，回退显示 dev
+    getVersion()
+      .then(setAppVersion)
+      .catch(() => setAppVersion("dev"));
+  }, []);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -84,6 +93,13 @@ export default function SettingsModal({ theme, onThemeChange, notify, onClose }:
           <button className="btn-ghost" onClick={() => void exportMarkdown()}>
             导出为 Markdown
           </button>
+        </div>
+
+        <div className="settings-section settings-about">
+          <div className="settings-label">关于</div>
+          <p className="settings-desc">
+            FMemos {appVersion} · flomo 风格的本地卡片笔记
+          </p>
         </div>
       </div>
     </div>

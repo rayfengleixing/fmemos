@@ -11,6 +11,18 @@ use tauri::{
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // 单实例必须最先注册：应用驻留托盘时再次启动（如点桌面图标），
+        // 会走到这个回调，直接唤出已有窗口而不是静默失败
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            use tauri::{Emitter, Manager};
+
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.show();
+                let _ = win.unminimize();
+                let _ = win.set_focus();
+                let _ = win.emit("quick-open", ());
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(
