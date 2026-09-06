@@ -17,6 +17,9 @@ dist-ssr
 *.db-shm
 *.db-wal
 
+# 安装包：走 GitHub Releases，仓库不携带二进制
+/release/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
