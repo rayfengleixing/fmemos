@@ -310,6 +310,13 @@ export function installBrowserMock(): void {
             args.url ?? "",
           );
           return Promise.resolve();
+        // 剪贴板插件：浏览器里直接走标准剪贴板 API（localhost 是安全上下文）；
+        // 不可用时 reject，让 copyText 继续落到 execCommand 兜底
+        case "plugin:clipboard-manager|write_text":
+          if (navigator.clipboard?.writeText) {
+            return navigator.clipboard.writeText(String(args.value ?? "")).then(() => undefined);
+          }
+          return Promise.reject(new Error("clipboard unavailable in mock"));
         default:
           return Promise.reject(new Error(`browser mock: unknown command ${cmd}`));
       }

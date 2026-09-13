@@ -1,6 +1,6 @@
 [package]
 name = "fmemos"
-version = "0.13.0"
+version = "0.13.1"
 description = "FMemos - flomo 风格的本地卡片笔记"
 authors = ["you"]
 edition = "2021"
@@ -31,6 +31,7 @@ tauri-plugin-global-shortcut = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
+tauri-plugin-clipboard-manager = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # SQLCipher 加密；vendored-openssl 让 openssl-src 从源码编 OpenSSL（需要 perl，见 .cargo/config.toml）

@@ -1,5 +1,6 @@
-import { useEffect } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { renderMarkdown } from "../lib/md";
+import { copyText } from "../lib/clipboard";
 import MemoImage from "./MemoImage";
 import type { Memo } from "../lib/types";
 
@@ -25,12 +26,30 @@ export default function ReviewModal({
   onEdit,
   onTagClick,
 }: Props) {
+  const [copied, setCopied] = useState<"" | "ok" | "fail">("");
+  const copyTimer = useRef(0);
+
+  const handleCopy = useCallback(async () => {
+    setCopied((await copyText(memo.content)) ? "ok" : "fail");
+    window.clearTimeout(copyTimer.current);
+    copyTimer.current = window.setTimeout(() => setCopied(""), 1500);
+  }, [memo.content]);
+
+  // 换了一条后反馈状态复位
+  useEffect(() => {
+    setCopied("");
+    window.clearTimeout(copyTimer.current);
+  }, [memo.id]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.clearTimeout(copyTimer.current);
+    };
   }, [onClose]);
 
   return (
@@ -48,6 +67,9 @@ export default function ReviewModal({
         <div className="review-foot">
           <span title={memo.createdAt}>{memo.createdAt}</span>
           <span className="review-actions">
+            <button className="btn-ghost" onClick={() => void handleCopy()}>
+              {copied === "ok" ? "已复制" : copied === "fail" ? "复制失败" : "复制"}
+            </button>
             <button className="btn-ghost" onClick={onEdit}>
               编辑
             </button>

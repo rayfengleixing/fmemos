@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Editor } from "@tiptap/react";
 import { formatTime } from "../lib/format";
 import { renderMarkdown, toggleTodo as toggleTodoInContent } from "../lib/md";
+import { copyText } from "../lib/clipboard";
 import { useImagePaste } from "../lib/useImagePaste";
 import MemoImage from "./MemoImage";
 import RichEditor, { insertImageRef } from "./RichEditor";
@@ -43,6 +44,7 @@ function MemoCard({
   const [draft, setDraft] = useState(memo.content);
   const [overflowing, setOverflowing] = useState(false); // 内容是否超过两行
   const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied] = useState<"" | "ok" | "fail">(""); // 复制按钮的短暂反馈
   const bodyRef = useRef<HTMLDivElement>(null);
   // 根节点 ref：编辑态下粘贴/拖入图片用（非编辑态图片走渲染）
   const cardRef = useRef<HTMLDivElement>(null);
@@ -53,6 +55,18 @@ function MemoCard({
     const m = /^!\[([^\]]*)\]\(image:\/\/(\d+)\)$/.exec(token);
     if (m) insertImageRef(editEditorRef.current, Number(m[2]), m[1] || "图片");
   });
+
+  // 复制原文到剪贴板，反馈（已复制 / 复制失败）1.5s 后复原
+  const copyTimer = useRef(0);
+  useEffect(() => () => window.clearTimeout(copyTimer.current), []);
+  const handleCopy = useCallback(
+    async () => {
+      setCopied((await copyText(memo.content)) ? "ok" : "fail");
+      window.clearTimeout(copyTimer.current);
+      copyTimer.current = window.setTimeout(() => setCopied(""), 1500);
+    },
+    [memo.content],
+  );
 
   useEffect(() => {
     setExpanded(false);
@@ -177,6 +191,9 @@ function MemoCard({
                 </>
               ) : (
                 <>
+                  <button onClick={() => void handleCopy()}>
+                    {copied === "ok" ? "已复制" : copied === "fail" ? "复制失败" : "复制"}
+                  </button>
                   <button onClick={() => onTogglePin(memo.id, memo.pinnedAt === null)}>
                     {memo.pinnedAt ? "取消置顶" : "置顶"}
                   </button>
