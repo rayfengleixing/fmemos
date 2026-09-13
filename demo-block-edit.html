@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>块级混合编辑 · 效果演示</title>
+<style>
+  :root {
+    --bg: #f4f4f2;
+    --card: #ffffff;
+    --text: #2f2f2d;
+    --text-2: #8a8a86;
+    --border: #e6e6e2;
+    --primary: #3b82f6;
+    --primary-soft: rgba(59, 130, 246, 0.10);
+    --green: #22a06b;
+    --green-soft: rgba(34, 160, 107, 0.12);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    background: var(--bg); color: var(--text);
+    display: flex; flex-direction: column; align-items: center;
+    padding: 40px 16px 80px; min-height: 100vh;
+  }
+  .page-title { font-size: 18px; font-weight: 600; margin-bottom: 6px; }
+  .page-desc { font-size: 13px; color: var(--text-2); margin-bottom: 18px; text-align: center; line-height: 1.7; }
+  .mode-switch {
+    display: flex; background: #eaeae6; border-radius: 999px; padding: 3px; margin-bottom: 22px;
+    font-size: 13px; user-select: none;
+  }
+  .mode-switch button {
+    border: 0; background: transparent; padding: 6px 16px; border-radius: 999px;
+    cursor: pointer; color: var(--text-2); font-size: 13px;
+  }
+  .mode-switch button.on { background: #fff; color: var(--text); font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+
+  .card {
+    width: 560px; max-width: 100%; background: var(--card);
+    border-radius: 14px; border: 1px solid var(--border);
+    box-shadow: 0 2px 10px rgba(0,0,0,.05);
+    padding: 18px 20px 12px;
+  }
+  /* ---- 渲染态块 ---- */
+  .blk { position: relative; padding: 7px 10px; margin: 0 -10px; border-radius: 8px; cursor: text; }
+  .blk:hover { background: var(--primary-soft); }
+  .blk .hint {
+    position: absolute; right: 8px; top: 6px; font-size: 11px; color: var(--primary);
+    opacity: 0; transition: opacity .12s; background: #fff; border: 1px solid var(--border);
+    border-radius: 999px; padding: 1px 8px; pointer-events: none;
+  }
+  .blk:hover .hint { opacity: 1; }
+  .blk p { font-size: 14.5px; line-height: 1.75; white-space: pre-wrap; word-break: break-word; }
+  .blk ul { list-style: none; }
+  .blk li { font-size: 14.5px; line-height: 1.9; display: flex; align-items: baseline; gap: 8px; }
+  .blk li .dot { color: var(--text-2); flex: none; }
+  .todo-check {
+    flex: none; width: 16px; height: 16px; border-radius: 5px; cursor: pointer;
+    border: 1.6px solid #c9c9c4; display: inline-flex; align-items: center; justify-content: center;
+    position: relative; top: 3px; transition: all .12s;
+  }
+  .todo-check:hover { border-color: var(--green); }
+  .todo-check.done { background: var(--green); border-color: var(--green); }
+  .todo-check.done::after {
+    content: ""; width: 4.5px; height: 8.5px; border: solid #fff; border-width: 0 2px 2px 0;
+    transform: rotate(45deg) translate(-0.5px, -1px);
+  }
+  .todo-text.done { color: var(--text-2); text-decoration: line-through; text-decoration-color: var(--green); }
+  .blk pre {
+    background: #f6f6f3; border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 12px; font-size: 13px; line-height: 1.6; overflow-x: auto;
+    font-family: "Cascadia Code", Consolas, monospace;
+  }
+  .tag { color: var(--primary); background: var(--primary-soft); border-radius: 4px; padding: 0 4px; font-weight: 500; }
+  .inline-code { background: #efefec; border-radius: 4px; padding: 1px 5px; font-size: 13px; font-family: Consolas, monospace; color: #c2410c; }
+  strong { font-weight: 700; }
+  a { color: var(--primary); }
+  /* ---- 编辑态 ---- */
+  .blk textarea {
+    width: 100%; border: 0; outline: 0; resize: none; background: transparent;
+    font-size: 14.5px; line-height: 1.75; font-family: inherit; color: var(--text);
+    padding: 0; overflow: hidden; caret-color: var(--primary);
+  }
+  .blk.editing { background: #fbfbf9; outline: 1.5px solid var(--primary); }
+  .blk.editing .hint { display: none; }
+  .blk.add-blk { color: var(--text-2); font-size: 13px; padding: 9px 10px; }
+  .blk.add-blk:hover { color: var(--primary); }
+  .edit-tip { font-size: 12px; color: var(--text-2); margin-top: 10px; text-align: right; }
+  .footnote { width: 560px; max-width: 100%; margin-top: 26px; font-size: 13px; color: var(--text-2); line-height: 2; }
+  .footnote b { color: var(--text); }
+  .footnote .pro { color: var(--green); font-weight: 600; }
+  .footnote .con { color: #d97706; font-weight: 600; }
+</style>
+</head>
+<body>
+  <div class="page-title">块级混合编辑 · 交互演示</div>
+  <div class="page-desc">这不是截图——是真的能点、能改、能勾选的 demo，还原 fmemos 的渲染风格</div>
+  <div class="mode-switch">
+    <button id="mHybrid" class="on">块级混合（新方案）</button>
+    <button id="mPlain">整卡 textarea（现状 0.11.0）</button>
+  </div>
+
+  <div class="card" id="card"></div>
+
+  <div class="footnote">
+    <b>体感说明</b><br>
+    <span class="pro">✓</span> 平时全是渲染好的成品，点哪段编辑哪段，其余内容保持排版不打扰<br>
+    <span class="pro">✓</span> 复选框不用进编辑态，直接点击勾选；标签、加粗、代码块样式实时可见<br>
+    <span class="pro">✓</span> 改动小：存储仍是纯 Markdown，待办聚合 / 标签 / 图片逻辑零迁移风险<br>
+    <span class="con">✗</span> 短板：在输入框里打字的那一刻，新打的字是「源码」，<b>失焦后才变漂亮</b>——做不到 Typora 那种边打边变<br>
+    <span class="con">✗</span> 跨块连续书写（如从段落直接回车续列表）体验一般，每次编辑以块为单位
+  </div>
+
+<script>
+const card = document.getElementById('card');
+let blocks = [
+  { md: "欢迎来到**块级混合编辑**演示：整张卡片平时是渲染好的，`点任意段落`就地变成输入框，失焦或点别处即保存渲染。" },
+  { md: "- [ ] 点我这个复选框试试（勾选不需要进编辑态）\n- [x] 已完成项自动加删除线\n- 普通列表项也是一块" },
+  { md: "行内样式 `code`、**加粗**、#标签 都实时渲染，就像 #随手记 这条" },
+  { md: "```\nconst ok = true; // 代码块照常渲染\n```" },
+];
+let editing = -1;          // 正在编辑的块下标，-1 = 无
+let mode = 'hybrid';       // hybrid | plain
+
+function esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function inline(s){
+  let h = esc(s);
+  h = h.replace(/`([^`]+)`/g, '<span class="inline-code">$1</span>');
+  h = h.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  h = h.replace(/#([^\s#`*<>@]+)/g, '<span class="tag">#$1</span>');
+  return h;
+}
+function blockType(md){
+  if (/^```/.test(md.trim())) return 'code';
+  const lines = md.split('\n');
+  if (lines.every(l => /^\s*-\s/.test(l))) return 'list';
+  return 'p';
+}
+function renderHTML(md){
+  const t = blockType(md);
+  if (t === 'code') {
+    const body = md.replace(/^\s*```[a-z]*\n?/, '').replace(/```\s*$/, '');
+    return '<pre>' + esc(body) + '</pre>';
+  }
+  if (t === 'list') {
+    const items = md.split('\n').map(l => {
+      const m = l.match(/^\s*-\s\[( |x)\]\s?(.*)$/) || l.match(/^\s*-\s(.*)$/);
+      if (!m) return '<li>' + inline(l) + '</li>';
+      if (m.length === 3) { // todo
+        const done = m[1] === 'x';
+        return '<li><span class="todo-check' + (done ? ' done' : '') + '" data-todo="1"></span><span class="todo-text' + (done ? ' done' : '') + '">' + inline(m[2] || '(空)') + '</span></li>';
+      }
+      return '<li><span class="dot">•</span><span>' + inline(m[1]) + '</span></li>';
+    }).join('');
+    return '<ul>' + items + '</ul>';
+  }
+  return '<p>' + inline(md) + '</p>';
+}
+function renderAll(){
+  if (mode === 'plain') { renderPlain(); return; }
+  card.innerHTML = '';
+  blocks.forEach((b, i) => {
+    const div = document.createElement('div');
+    div.className = 'blk' + (i === editing ? ' editing' : '');
+    div.dataset.i = i;
+    if (i === editing) {
+      div.innerHTML = '<textarea></textarea>';
+      const ta = div.querySelector('textarea');
+      ta.value = b.md;
+      autoGrow(ta);
+      ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+      ta.addEventListener('input', () => autoGrow(ta));
+      ta.addEventListener('keydown', e => {
+        if (e.key === 'Escape') commit();
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) commit();
+      });
+      ta.addEventListener('blur', () => commit());
+    } else {
+      div.innerHTML = renderHTML(b.md) + '<span class="hint">点击编辑</span>';
+    }
+    card.appendChild(div);
+  });
+  const add = document.createElement('div');
+  add.className = 'blk add-blk';
+  add.textContent = '＋ 点击这里追加一段';
+  add.addEventListener('click', e => { e.stopPropagation(); blocks.push({md:''}); editing = blocks.length - 1; renderAll(); });
+  card.appendChild(add);
+  const tip = document.createElement('div');
+  tip.className = 'edit-tip';
+  tip.textContent = 'Esc 或点别处保存 · 当前正在编辑第 ' + (editing + 1) + ' 块';
+  if (editing === -1) tip.textContent = '点击任意段落开始编辑';
+  card.appendChild(tip);
+}
+function autoGrow(ta){ ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'; }
+function commit(){
+  if (editing < 0) return;
+  const ta = card.querySelector('.blk.editing textarea');
+  if (ta) {
+    const val = ta.value.replace(/\s+$/, '');
+    if (val === '') blocks.splice(editing, 1);
+    else blocks[editing] = { md: val };
+  }
+  editing = -1;
+  renderAll();
+}
+card.addEventListener('click', e => {
+  if (mode !== 'hybrid' || editing >= 0) return;
+  const check = e.target.closest('.todo-check');
+  if (check) { toggleTodo(check); return; }
+  const blk = e.target.closest('.blk:not(.add-blk)');
+  if (blk) { editing = +blk.dataset.i; renderAll(); }
+});
+function toggleTodo(el){
+  const li = el.closest('li');
+  const ul = el.closest('ul');
+  const blkDiv = ul.closest('.blk');
+  const i = +blkDiv.dataset.i;
+  const idx = [...ul.children].indexOf(li);
+  const lines = blocks[i].md.split('\n');
+  const m = lines[idx].match(/^(\s*-\s\[)( |x)(\].*)$/);
+  if (m) lines[idx] = m[1] + (m[2] === ' ' ? 'x' : ' ') + m[3];
+  blocks[i] = { md: lines.join('\n') };
+  renderAll();
+}
+/* ---- 现状模式：整卡 textarea ---- */
+function renderPlain(){
+  card.innerHTML = '<div class="blk editing"><textarea id="plainTa"></textarea></div>' +
+    '<div class="edit-tip">现状：要么看源码，要么看预览面板——打字时永远看不到成品</div>';
+  const ta = document.getElementById('plainTa');
+  ta.value = blocks.map(b => b.md).join('\n\n');
+  ta.style.minHeight = '260px';
+  ta.addEventListener('blur', () => {
+    blocks = ta.value.split(/\n\n+/).map(s => ({ md: s })).filter(b => b.md.trim());
+  });
+}
+document.getElementById('mHybrid').addEventListener('click', () => setMode('hybrid'));
+document.getElementById('mPlain').addEventListener('click', () => setMode('plain'));
+function setMode(m){
+  if (mode === m) return;
+  if (mode === 'plain') { // 先把 plain 的内容收回
+    const ta = document.getElementById('plainTa');
+    if (ta) blocks = ta.value.split(/\n\n+/).map(s => ({ md: s })).filter(b => b.md.trim());
+  }
+  mode = m; editing = -1;
+  document.getElementById('mHybrid').classList.toggle('on', m === 'hybrid');
+  document.getElementById('mPlain').classList.toggle('on', m === 'plain');
+  renderAll();
+}
+renderAll();
+</script>
+</body>
+</html>

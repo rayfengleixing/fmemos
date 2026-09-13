@@ -1,9 +1,10 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { Editor } from "@tiptap/react";
 import { formatTime } from "../lib/format";
 import { renderMarkdown, toggleTodo as toggleTodoInContent } from "../lib/md";
-import { insertAtCaret, useImagePaste } from "../lib/useImagePaste";
+import { useImagePaste } from "../lib/useImagePaste";
 import MemoImage from "./MemoImage";
-import TagInput from "./TagInput";
+import RichEditor, { insertImageRef } from "./RichEditor";
 import type { Memo } from "../lib/types";
 
 interface Props {
@@ -45,12 +46,13 @@ function MemoCard({
   const bodyRef = useRef<HTMLDivElement>(null);
   // 根节点 ref：编辑态下粘贴/拖入图片用（非编辑态图片走渲染）
   const cardRef = useRef<HTMLDivElement>(null);
+  const editEditorRef = useRef<Editor | null>(null);
 
-  // 编辑态的图片粘贴：入库后在编辑框光标处插入引用
-  const { uploading } = useImagePaste(
-    cardRef,
-    (token) => insertAtCaret(cardRef.current, draft, setDraft, token),
-  );
+  // 编辑态的图片粘贴：入库后在编辑框光标处插入图片节点
+  const { uploading } = useImagePaste(cardRef, (token) => {
+    const m = /^!\[([^\]]*)\]\(image:\/\/(\d+)\)$/.exec(token);
+    if (m) insertImageRef(editEditorRef.current, Number(m[2]), m[1] || "图片");
+  });
 
   useEffect(() => {
     setExpanded(false);
@@ -120,18 +122,24 @@ function MemoCard({
       )}
       {editing ? (
         <div className="memo-editing">
-          <TagInput
+          <RichEditor
             value={draft}
             allTags={allTags}
-            rows={4}
+            placeholder="编辑这条 memo..."
             autoFocus
             onChange={setDraft}
+            editorRef={editEditorRef}
             onKeyDown={(e) => {
-              if (e.key === "Escape") cancel();
+              if (e.key === "Escape") {
+                cancel();
+                return true;
+              }
               if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
                 e.preventDefault();
                 void save();
+                return true;
               }
+              return false;
             }}
           />
           <div className="memo-actions">

@@ -5,11 +5,11 @@ import * as api from "./api";
 export const IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 
 /**
- * 容器级图片粘贴 / 拖入：paste/drop 事件会从 textarea 冒泡到容器，
- * 所以不用给 TagInput / TagTextarea 加 props——容器上监听即可覆盖所有输入区。
+ * 容器级图片粘贴 / 拖入：paste/drop 事件会从编辑区（TipTap contenteditable）冒泡到容器，
+ * 所以不用给 RichEditor 加 props——容器上监听即可覆盖所有输入区。
  *
  * 图片文件读成 base64 → api.addImage 入库 → 回调拿到 `![图片](image://id)` 引用，
- * 由调用方决定插到哪（一般插到 textarea 光标处）。
+ * 由调用方决定插到哪（RichEditor.insertImageRef 插成图片节点）。
  */
 export function useImagePaste(
   containerRef: RefObject<HTMLElement | null>,
@@ -88,34 +88,4 @@ export function useImagePaste(
   }, []);
 
   return { uploading };
-}
-
-/**
- * 把图片引用插进 textarea 光标处：引用独占一行（前后补换行），插入后恢复光标。
- * 找不到 textarea（理论不会发生）就追加到末尾。
- */
-export function insertAtCaret(
-  container: HTMLElement | null,
-  text: string,
-  setText: (next: string) => void,
-  token: string,
-) {
-  const ta = container?.querySelector("textarea");
-  if (!ta) {
-    setText(text ? `${text}\n${token}` : token);
-    return;
-  }
-  const pos = ta.selectionStart ?? text.length;
-  const end = ta.selectionEnd ?? pos;
-  const nl = (s: string) => (s && !s.endsWith("\n") ? `${s}\n` : s);
-  const before = nl(text.slice(0, pos));
-  const after = text.slice(end);
-  setText(before + token + "\n" + after);
-  // 等 React 渲染完新 value 再把光标放到引用之后
-  const caret = before.length + token.length + 1;
-  setTimeout(() => {
-    const t = container?.querySelector("textarea");
-    t?.focus();
-    t?.setSelectionRange(caret, caret);
-  }, 0);
 }

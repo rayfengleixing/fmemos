@@ -267,7 +267,7 @@ nav .side-section:first-child {
   border-color: var(--primary);
 }
 
-/* ---------- 标签高亮输入框（透明输入层 + 高亮渲染层叠加，TagTextarea 组件） ---------- */
+/* ---------- 输入区（TipTap 富文本编辑器，0.12.0 起） ---------- */
 .editor {
   padding: 12px 14px;
   background: var(--card-bg);
@@ -281,68 +281,75 @@ nav .side-section:first-child {
   border-color: var(--primary);
 }
 
-.tt-stack {
+/* 富文本编辑器容器：补全弹层的定位锚 */
+.rich-editor {
   position: relative;
 }
 
-/* 两层的字体、行高、padding、换行规则必须完全一致，否则文字会错位 */
-.tt-highlight,
-.tt-stack textarea {
-  margin: 0;
-  padding: 2px 0;
-  font-family: inherit;
-  font-size: 15px;
-  line-height: 1.7;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.tt-highlight {
-  position: absolute;
-  inset: 0;
-  overflow: hidden;
-  color: var(--text);
-  pointer-events: none;
-}
-
-.tag-hl {
-  color: var(--primary);
-  background: var(--primary-light);
-  border-radius: 3px;
-  padding: 2px 0;
-  box-decoration-break: clone;
-  -webkit-box-decoration-break: clone;
-}
-
-.tt-stack textarea {
-  position: relative;
-  display: block;
-  width: 100%;
-  min-height: 88px;
+/* ProseMirror 编辑面：复用 .md 的排版口径，让「编辑中」和「卡片正文」零色差 */
+.rich-content {
+  min-height: 96px;
   max-height: 45vh;
   overflow-y: auto;
-  /* 随内容自动增高（WebView2/Chromium 123+），超出封顶后内部滚动 */
-  field-sizing: content;
-  border: none;
+  padding: 2px 0;
+  font-size: 15px;
+  line-height: 1.7;
   outline: none;
-  resize: vertical;
-  background: transparent;
-  color: transparent;
+  white-space: pre-wrap;
+  word-break: break-word;
+  scrollbar-width: thin;
   caret-color: var(--text);
-  scrollbar-width: none;
 }
 
-/* 隐藏编辑框滚动条（内部滚动跟随光标即可） */
-.tt-stack textarea::-webkit-scrollbar {
-  display: none;
-}
-
-.tt-stack textarea::placeholder {
+/* Placeholder（@tiptap/extensions）：空文档首段显示灰色引导文案 */
+.rich-content p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
   color: var(--text-secondary);
+  pointer-events: none;
+  float: left;
+  height: 0;
 }
 
-.tt-stack textarea::selection {
+/* 任务列表：复选框样式贴近卡片渲染的 .todo-check */
+.rich-content ul[data-type="taskList"] {
+  list-style: none;
+  margin: 6px 0;
+  padding-left: 2px;
+}
+
+.rich-content ul[data-type="taskList"] li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 3px 0;
+}
+
+.rich-content ul[data-type="taskList"] li > label {
+  flex-shrink: 0;
+  margin-top: 4px;
+}
+
+.rich-content ul[data-type="taskList"] input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--primary);
+  cursor: pointer;
+}
+
+.rich-content ul[data-type="taskList"] li[data-checked="true"] > div {
+  color: var(--text-secondary);
+  text-decoration: line-through;
+  text-decoration-color: var(--primary);
+}
+
+/* 选中态与整体配色一致 */
+.rich-content ::selection {
   background: rgba(62, 180, 119, 0.3);
+}
+
+/* 图片节点在编辑态与卡片渲染态同款（.memo-img 样式全局复用） */
+.memo-img-wrap {
+  display: inline-block;
 }
 
 .editor-footer {
@@ -352,59 +359,13 @@ nav .side-section:first-child {
   margin-top: 8px;
 }
 
-/* 实时预览开关：小号幽灵按钮，激活时主题色描边 */
-.editor-toggle {
-  margin-left: auto;
-  margin-right: 10px;
-  padding: 3px 10px;
-  font-size: 12px;
-  color: var(--text-secondary, #888);
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  cursor: pointer;
-  transition: color 0.15s, border-color 0.15s;
-}
-
-.editor-toggle:hover {
-  color: var(--primary);
-  border-color: var(--primary);
-}
-
-.editor-toggle.active {
-  color: var(--primary);
-  border-color: var(--primary);
-  background: var(--primary-alpha, rgba(62, 180, 119, 0.1));
-}
-
-/* 输入框实时预览面板：与卡片正文同一套 .md 渲染样式，限高可滚动 */
-.editor-preview {
-  margin-top: 10px;
-  padding: 10px 12px;
-  max-height: 220px;
-  overflow-y: auto;
-  font-size: 14.5px;
-  line-height: 1.75;
-  background: var(--bg, #f7f7f7);
-  border: 1px dashed var(--border);
-  border-radius: 10px;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.editor-preview:empty {
-  display: none;
-}
-
-/* # 自动补全下拉：锚定在 TagInput 包装层（即 textarea 区域），从输入区底部向上展开 */
+/* # 自动补全下拉：锚定在编辑器容器内，随光标位置展开 */
 .tag-input {
   position: relative;
 }
 
 .tag-suggest {
   position: absolute;
-  left: 0;
-  bottom: 0;
   min-width: 160px;
   max-width: 300px;
   padding: 4px;

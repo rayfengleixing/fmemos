@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  listEnterAction,
   listTodos,
   parseBlocks,
   splitHighlight,
@@ -157,37 +156,6 @@ describe("listTodos", () => {
 
   it("普通无序列表与正文不算待办", () => {
     expect(listTodos("- 买菜\ntext\n- [ ] 真待办")).toEqual([{ text: "真待办", done: false }]);
-  });
-});
-
-describe("listEnterAction", () => {
-  it("有内容的列表行回车延续标记", () => {
-    expect(listEnterAction("- 买菜", 4)).toEqual({ type: "continue", marker: "- " });
-    expect(listEnterAction("- [ ] 写周报", 7)).toEqual({ type: "continue", marker: "- [ ] " });
-    // 新任务行始终未完成，已完成的也重置
-    expect(listEnterAction("- [X] 晨会", 7)).toEqual({ type: "continue", marker: "- [ ] " });
-    expect(listEnterAction("3. 第三步", 6)).toEqual({ type: "continue", marker: "4. " });
-    expect(listEnterAction("10. 第十步", 7)).toEqual({ type: "continue", marker: "11. " });
-  });
-
-  it("光标在行中间时拆分条目，同样延续标记", () => {
-    expect(listEnterAction("- 买菜做饭", 4)).toEqual({ type: "continue", marker: "- " });
-  });
-
-  it("空标记项回车退出列表", () => {
-    expect(listEnterAction("- ", 2)).toEqual({ type: "exit", markerLen: 2 });
-    expect(listEnterAction("- [ ] ", 6)).toEqual({ type: "exit", markerLen: 6 });
-    expect(listEnterAction("- [x]", 5)).toEqual({ type: "exit", markerLen: 5 });
-    expect(listEnterAction("2. ", 3)).toEqual({ type: "exit", markerLen: 3 });
-    // 单个 "-" 不构成标记，走默认换行
-    expect(listEnterAction("-", 1)).toBe(null);
-  });
-
-  it("非列表行或光标在标记内部走默认换行", () => {
-    expect(listEnterAction("普通文字", 4)).toBe(null);
-    expect(listEnterAction("3.点号后没空格", 2)).toBe(null);
-    expect(listEnterAction("- 买菜", 1)).toBe(null);
-    expect(listEnterAction("- [ ] 买菜", 3)).toBe(null);
   });
 });
 

@@ -49,36 +49,9 @@ export function splitImages(text: string): ImagePart[] {
   return parts;
 }
 
-export type ListEnterAction =
-  | { type: "exit"; markerLen: number }
-  | { type: "continue"; marker: string };
-
-/**
- * 回车落在列表行上时的行为（输入框自动延续标记用）：
- * - 空标记项（只有 `- `、`- [ ]`、`3. ` 这类标记）→ 退出列表，删除本行标记；
- * - 有内容的列表行 → 生成下一行的标记（任务列表新行始终未完成）；
- * - 非列表行、或光标还在标记内部 → null（走默认换行）。
- * caretOffset 为光标在行内的下标（0 = 行首）。
- */
-export function listEnterAction(line: string, caretOffset: number): ListEnterAction | null {
-  // 任务列表也以 "- " 开头，先判 TODO，避免被无序规则抢先
-  const todo = /^- \[( |x|X)\]( ?)/.exec(line);
-  const ul = todo ? null : /^- /.exec(line);
-  const ol = todo || ul ? null : /^(\d+)\. /.exec(line);
-  const marker = todo ?? ul ?? ol;
-  if (!marker) return null;
-
-  const markerLen = marker[0].length;
-  const contentEmpty = line.slice(markerLen).trim() === "";
-  if (contentEmpty && caretOffset >= markerLen) {
-    return { type: "exit", markerLen };
-  }
-  if (caretOffset < markerLen) return null;
-  const next = todo ? "- [ ] " : ul ? "- " : `${parseInt(ol![1], 10) + 1}. `;
-  return { type: "continue", marker: next };
-}
-const INLINE_CODE_RE = /`([^`\n]+)`/g;
-const BOLD_RE = /\*\*(.+?)\*\*/g;
+export const INLINE_CODE_RE = /`([^`\n]+)`/g;
+/** TipTap 转换层也用这套规则，保持单一来源 */
+export const BOLD_RE = /\*\*(.+?)\*\*/g;
 // URL 只吃 ASCII 及拉丁区字符：遇到空白或 CJK/全角区（U+2000 起）即终止，
 // 避免中文标点与后续文字被吞进链接
 const URL_RE = /https?:\/\/[^\s\u2000-\u{10FFFF}]+/gu;
