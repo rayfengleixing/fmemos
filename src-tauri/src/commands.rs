@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use rusqlite::backup::Backup;
@@ -6,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::db::{self, Db};
+use crate::import;
 use crate::tags;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -566,6 +568,146 @@ pub fn export_to(db: State<Db>, path: String) -> Result<usize, String> {
     Ok(count)
 }
 
+/// 导入报告：dry_run 时 added 表示「将新增」的条数
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportReport {
+    /// 识别到的笔记条数（含重复与空内容）
+    pub total: usize,
+    /// 实际写入 / 将要写入的条数
+    pub added: usize,
+    /// 因正文与已有笔记重复而跳过的条数
+    pub skipped: usize,
+    /// 因正文为空而跳过的条数
+    pub empty: usize,
+    /// 扫过的文件数
+    pub files: usize,
+    /// 前几条的正文摘要，供前端确认时预览
+    pub samples: Vec<String>,
+}
+
+/// 文件修改时间的本地时间字符串（借 SQLite 做时区换算，省得自己实现一套时间库）
+fn file_mtime_local(conn: &Connection, path: &Path) -> Option<String> {
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    let secs = modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs() as i64;
+    conn.query_row(
+        "SELECT strftime('%Y-%m-%d %H:%M:%S', ?1, 'unixepoch', 'localtime')",
+        params![secs],
+        |r| r.get(0),
+    )
+    .ok()
+}
+
+/// 正文摘要：第一行非空内容，最多 40 字
+fn sample_line(content: &str) -> String {
+    let first = content
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim();
+    let mut s: String = first.chars().take(40).collect();
+    if first.chars().count() > 40 {
+        s.push('…');
+    }
+    s
+}
+
+/// 导入实现：解析路径下（文件夹则递归）所有文本文件 → 与库内正文去重 → 非 dry_run 时整批写入。
+/// 去重键是归一化正文，所以重复导入同一个文件不会翻倍；整批写入在一个事务里，中途失败不会留半截数据。
+pub fn import_path_impl(
+    conn: &Connection,
+    root: &Path,
+    dry_run: bool,
+) -> Result<ImportReport, String> {
+    let files = import::collect_files(root)?;
+    if files.is_empty() {
+        return Err("没有找到可导入的文件（支持 .md / .markdown / .txt / .html）".into());
+    }
+
+    // 已有正文的归一化集合：既做去重，也顺带挡住同一批里的重复内容
+    let mut seen: HashSet<String> = {
+        let mut stmt = conn.prepare("SELECT content FROM memos").map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        let mut set = HashSet::new();
+        for c in rows {
+            set.insert(import::dedup_key(&c.map_err(|e| e.to_string())?));
+        }
+        set
+    };
+
+    let mut total = 0usize;
+    let mut empty = 0usize;
+    let mut skipped = 0usize;
+    let mut samples: Vec<String> = Vec::new();
+    let mut pending: Vec<(Option<String>, String)> = Vec::new();
+
+    for path in &files {
+        let fallback = file_mtime_local(conn, path);
+        let text = import::read_text(path)?;
+        let ext = import::extension_of(path);
+        for memo in import::parse_text(&text, &ext, fallback.as_deref()) {
+            total += 1;
+            let content = memo.content.trim().to_string();
+            let key = import::dedup_key(&content);
+            if key.is_empty() {
+                empty += 1;
+                continue;
+            }
+            if seen.contains(&key) {
+                skipped += 1;
+                continue;
+            }
+            seen.insert(key);
+            if samples.len() < 5 {
+                samples.push(sample_line(&content));
+            }
+            pending.push((memo.created_at, content));
+        }
+    }
+
+    let added = pending.len();
+    if !dry_run && added > 0 {
+        let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+        for (created_at, content) in &pending {
+            let done = match created_at {
+                // 导入的时间戳是导出文件里的原始时间，要原样保留（不能用默认的 now）
+                Some(ts) => tx.execute(
+                    "INSERT INTO memos (content, created_at, updated_at) VALUES (?1, ?2, ?2)",
+                    params![content, ts],
+                ),
+                None => tx.execute("INSERT INTO memos (content) VALUES (?1)", params![content]),
+            };
+            done.map_err(|e| e.to_string())?;
+            let id = tx.last_insert_rowid();
+            tags::sync_tags(&tx, id, content).map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+
+    Ok(ImportReport {
+        total,
+        added,
+        skipped,
+        empty,
+        files: files.len(),
+        samples,
+    })
+}
+
+/// 从文件或文件夹导入笔记。dry_run = true 时只解析统计（供前端确认），不写库。
+#[tauri::command]
+pub fn import_path(db: State<Db>, path: String, dry_run: bool) -> Result<ImportReport, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    import_path_impl(&conn, Path::new(&path), dry_run)
+}
+
+/// 打开自动备份目录。
+
 /// 打开自动备份目录。
 #[tauri::command]
 pub fn open_backup_dir(app: tauri::AppHandle) -> Result<(), String> {
@@ -1035,5 +1177,103 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn import_path_writes_memos_and_dedupes() {
+        let conn = setup();
+        create_memo_impl(&conn, "库里已有的一条").unwrap();
+
+        let dir = tests_support::temp_dir("import");
+        // flomo 的 Markdown 导出：按 "## 时间" 分节，条目之间用 --- 分隔
+        std::fs::write(
+            dir.join("flomo.md"),
+            "## 2021-04-05 09:43:21\n\n第一条 #读书\n\n---\n\n\
+             ## 2021-04-06 10:00:00\n\n第二条\n- [ ] 待办\n\n---\n",
+        )
+        .unwrap();
+        // 散装文本文件：整段一条，兜底用文件修改时间
+        std::fs::write(dir.join("note.txt"), "散的文本文件\r\n第二行").unwrap();
+        // 与库里已有内容重复
+        std::fs::write(dir.join("已有.md"), "库里已有的一条\n").unwrap();
+
+        // 预览：只解析统计，不写库
+        let preview = import_path_impl(&conn, &dir, true).unwrap();
+        assert_eq!(preview.files, 3);
+        assert_eq!(preview.total, 4);
+        assert_eq!(preview.added, 3);
+        assert_eq!(preview.skipped, 1);
+        assert_eq!(preview.samples.len(), 3);
+        assert_eq!(
+            list_memos_impl(&conn, None, None, false, None).unwrap().len(),
+            1
+        );
+
+        let report = import_path_impl(&conn, &dir, false).unwrap();
+        assert_eq!(report.added, 3);
+        let all = list_memos_impl(&conn, None, None, false, None).unwrap();
+        assert_eq!(all.len(), 4);
+
+        // 导出里的原始时间戳要原样保留，标签同步进 memo_tags
+        let old = all
+            .iter()
+            .find(|m| m.content.starts_with("第一条"))
+            .unwrap();
+        assert_eq!(old.created_at, "2021-04-05 09:43:21");
+        assert_eq!(
+            list_memos_impl(&conn, Some("读书".into()), None, false, None)
+                .unwrap()
+                .len(),
+            1
+        );
+        // 文本文件的行尾归一成 LF，时间是文件修改时间
+        let txt = all
+            .iter()
+            .find(|m| m.content.starts_with("散的文本"))
+            .unwrap();
+        assert_eq!(txt.content, "散的文本文件\n第二行");
+        assert!(txt.created_at.starts_with("20"));
+
+        // 再导入一次：全部命中重复，库里条数不变
+        let again = import_path_impl(&conn, &dir, false).unwrap();
+        assert_eq!(again.added, 0);
+        assert_eq!(again.skipped, 4);
+        assert_eq!(
+            list_memos_impl(&conn, None, None, false, None).unwrap().len(),
+            4
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn import_path_rejects_directory_without_importable_files() {
+        let conn = setup();
+        let dir = tests_support::temp_dir("import-empty");
+        assert!(import_path_impl(&conn, &dir, true).is_err());
+        std::fs::write(dir.join("pic.png"), "x").unwrap();
+        assert!(import_path_impl(&conn, &dir, true).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+}
+
+/// 测试共用的临时目录工具（import / 备份等测试用）。目录名进程内唯一，避免并行测试互相踩。
+#[cfg(test)]
+pub mod tests_support {
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static SEQ: AtomicUsize = AtomicUsize::new(0);
+
+    pub fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "fmemos-test-{tag}-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
     }
 }

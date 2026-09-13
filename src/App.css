@@ -939,6 +939,113 @@ li.todo-done .todo-text {
   text-decoration: line-through;
 }
 
+/* ---------- 待办清单（聚合视图） ---------- */
+.todo-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 10px 14px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 13px;
+}
+
+.todo-hint {
+  margin-left: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.todo-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* 工具栏里的紧凑分段控件（比设置面板里的矮一档） */
+.seg-sm .seg-item {
+  padding: 4px 10px;
+  font-size: 12.5px;
+}
+
+.todo-group {
+  margin-top: 16px;
+}
+
+.todo-agenda {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.todo-agenda li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 12px;
+  font-size: 14.5px;
+  line-height: 1.7;
+}
+
+.todo-agenda li + li {
+  border-top: 1px solid var(--border);
+}
+
+.todo-agenda .todo-text {
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+
+/* 文本里的 #标签 沿用卡片正文的绿色可点样式 */
+.todo-agenda .tag {
+  color: var(--primary);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.todo-agenda .tag:hover {
+  text-decoration: underline;
+}
+
+.todo-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.todo-tag {
+  color: var(--primary-text);
+  cursor: pointer;
+}
+
+.todo-tag:hover {
+  text-decoration: underline;
+}
+
+.todo-jump {
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.todo-jump:hover {
+  color: var(--primary-text);
+  text-decoration: underline;
+}
+
 /* ---------- 加载更多 ---------- */
 .loading-more {
   padding: 10px 0;

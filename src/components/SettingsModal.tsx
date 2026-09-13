@@ -20,8 +20,8 @@ interface Props {
   onThemeChange: (theme: ThemeMode) => void;
   /** 操作结果提示（走 App 的浮条） */
   notify: (text: string) => void;
-  /** 从备份恢复完成后调用：App 侧重新拉数据并回到「全部笔记」 */
-  onRestored: () => Promise<void> | void;
+  /** 数据整体变化后调用（从备份恢复 / 批量导入）：App 侧重新拉数据并回到「全部笔记」 */
+  onDataReloaded: () => Promise<void> | void;
   onClose: () => void;
 }
 
@@ -29,12 +29,13 @@ export default function SettingsModal({
   theme,
   onThemeChange,
   notify,
-  onRestored,
+  onDataReloaded,
   onClose,
 }: Props) {
   const [appVersion, setAppVersion] = useState("");
   const [backups, setBackups] = useState<BackupInfo[] | null>(null);
   const [restoring, setRestoring] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
 
   useEffect(() => {
     // 浏览器调试模式没有该命令，回退显示 dev
@@ -95,13 +96,73 @@ export default function SettingsModal({
     setRestoring(b.path);
     try {
       const count = await api.restoreBackup(b.path);
-      await onRestored();
+      await onDataReloaded();
       setBackups(await api.listBackups());
       notify(`已恢复到 ${b.date} 的备份，共 ${count} 条笔记`);
     } catch (e) {
       notify(`恢复失败：${e}`);
     } finally {
       setRestoring(null);
+    }
+  };
+
+  /**
+   * 导入：选文件 / 文件夹 → 先跑一次 dryRun 拿到统计与样本 → 确认后才真正写库。
+   * 后端按正文去重，重复导入同一个文件不会翻倍，所以选错了也不会污染数据。
+   */
+  const pickAndImport = async (directory: boolean) => {
+    let path: string;
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const picked = directory
+        ? await open({ title: "选择要导入的文件夹", directory: true })
+        : await open({
+            title: "选择要导入的文件",
+            multiple: false,
+            filters: [
+              {
+                name: "Markdown / 文本 / flomo 导出",
+                extensions: ["md", "markdown", "txt", "html", "htm"],
+              },
+            ],
+          });
+      if (typeof picked !== "string") return;
+      path = picked;
+    } catch {
+      // 浏览器调试模式没有文件选择框
+      notify("浏览器调试模式没有文件选择框，请在应用里导入");
+      return;
+    }
+
+    setImporting(true);
+    try {
+      const preview = await api.importPath(path, true);
+      if (preview.added === 0) {
+        notify(
+          `没有可导入的新内容：扫过 ${preview.files} 个文件，识别 ${preview.total} 条，` +
+            `重复 ${preview.skipped} 条，空内容 ${preview.empty} 条`,
+        );
+        return;
+      }
+      const lines = [
+        `扫过 ${preview.files} 个文件，识别 ${preview.total} 条笔记`,
+        `将新增 ${preview.added} 条，跳过重复 ${preview.skipped} 条` +
+          (preview.empty > 0 ? `，空内容 ${preview.empty} 条` : ""),
+        "",
+        ...preview.samples.map((s) => `· ${s}`),
+        preview.added > preview.samples.length ? "· …" : "",
+        "",
+        "确认导入？（按正文去重，重复导入同一个文件不会翻倍）",
+      ].filter((l) => l !== "");
+      if (!confirm(lines.join("\n"))) return;
+
+      const report = await api.importPath(path, false);
+      await onDataReloaded();
+      notify(`已导入 ${report.added} 条笔记（跳过重复 ${report.skipped} 条）`);
+    } catch (e) {
+      notify(`导入失败：${e}`);
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -158,7 +219,7 @@ export default function SettingsModal({
                     <span className="backup-size">{fmtSize(b.sizeBytes)}</span>
                     <button
                       className="btn-ghost"
-                      disabled={restoring !== null}
+                      disabled={restoring !== null || importing}
                       onClick={() => void restore(b)}
                     >
                       {restoring === b.path ? "恢复中..." : "恢复"}
@@ -175,6 +236,34 @@ export default function SettingsModal({
           <button className="btn-ghost" onClick={() => void exportMarkdown()}>
             导出为 Markdown
           </button>
+        </div>
+
+        <div className="settings-section">
+          <div className="settings-label">导入</div>
+          <p className="settings-desc">
+            从 flomo 导出的 HTML、或 Markdown / 纯文本文件（整个文件夹也行）批量倒进 FMemos。
+            按正文去重，重复导入同一个文件不会翻倍；真正写入前会先给出条数预览让你确认。
+          </p>
+          <div className="settings-actions">
+            <button
+              className="btn-ghost"
+              disabled={importing}
+              onClick={() => void pickAndImport(false)}
+            >
+              {importing ? "导入中..." : "导入文件"}
+            </button>
+            <button
+              className="btn-ghost"
+              disabled={importing}
+              onClick={() => void pickAndImport(true)}
+            >
+              导入文件夹
+            </button>
+          </div>
+          <p className="settings-desc settings-note">
+            文件夹里每个 .md / .txt 算一条；文件里若有 <code>## 2021-04-05 09:43:21</code> 这样的分节标题，
+            会按节拆成多条，没写时间的用文件修改时间。
+          </p>
         </div>
 
         <div className="settings-section settings-about">

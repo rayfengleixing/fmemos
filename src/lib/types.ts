@@ -25,3 +25,19 @@ export interface BackupInfo {
   date: string;
   sizeBytes: number;
 }
+
+/** 导入报告：dryRun 时 added 表示「将新增」的条数 */
+export interface ImportReport {
+  /** 识别到的笔记条数（含重复与空内容） */
+  total: number;
+  /** 实际写入 / 将要写入的条数 */
+  added: number;
+  /** 因正文重复而跳过的条数 */
+  skipped: number;
+  /** 因正文为空而跳过的条数 */
+  empty: number;
+  /** 扫过的文件数 */
+  files: number;
+  /** 前几条正文摘要，供确认前预览 */
+  samples: string[];
+}

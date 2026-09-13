@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { listEnterAction, parseBlocks, splitHighlight, splitLinks, toggleTodo, trimUrl } from "./md";
+import {
+  listEnterAction,
+  listTodos,
+  parseBlocks,
+  splitHighlight,
+  splitLinks,
+  toggleTodo,
+  trimUrl,
+} from "./md";
 import { TAG_FULL_RE, TAG_PARTIAL_RE } from "./tags";
 
 describe("splitHighlight", () => {
@@ -123,6 +131,31 @@ describe("toggleTodo", () => {
 
   it("无对应序号时原样返回", () => {
     expect(toggleTodo("- [ ] a", 5)).toBe("- [ ] a");
+  });
+});
+
+describe("listTodos", () => {
+  it("按出现顺序列出，含已完成与无文本项", () => {
+    expect(listTodos("- [ ] a\n- [x] b\n- [ ]")).toEqual([
+      { text: "a", done: false },
+      { text: "b", done: true },
+      { text: "", done: false },
+    ]);
+  });
+
+  it("跳过代码块，且下标与 toggleTodo 对得上", () => {
+    const c = "```\n- [x] code\n```\n- [ ] real\n- [ ] two";
+    expect(listTodos(c)).toEqual([
+      { text: "real", done: false },
+      { text: "two", done: false },
+    ]);
+    // 列表第 i 项，正好是 toggleTodo(c, i) 会翻转的那一行
+    expect(toggleTodo(c, 0)).toContain("- [x] real");
+    expect(toggleTodo(c, 1)).toContain("- [x] two");
+  });
+
+  it("普通无序列表与正文不算待办", () => {
+    expect(listTodos("- 买菜\ntext\n- [ ] 真待办")).toEqual([{ text: "真待办", done: false }]);
   });
 });
 

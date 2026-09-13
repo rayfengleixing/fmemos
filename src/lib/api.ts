@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { BackupInfo, Memo } from "./types";
+import type { BackupInfo, ImportReport, Memo } from "./types";
 
 export async function listMemos(
   opts: {
@@ -81,6 +81,14 @@ export function restoreBackup(path: string): Promise<number> {
 
 /** 导出结果：file = 已写入另存为选定的位置；download = 浏览器下载；cancel = 用户取消 */
 export type ExportResult = "file" | "download" | "cancel";
+
+/**
+ * 从文件或文件夹导入笔记（.md / .markdown / .txt / flomo 的 .html 导出包）。
+ * dryRun = true 时只解析统计、不写库，用于导入前确认；按正文去重，重复导入不会翻倍。
+ */
+export function importPath(path: string, dryRun: boolean): Promise<ImportReport> {
+  return invoke<ImportReport>("import_path", { path, dryRun });
+}
 
 /**
  * 导出全部笔记为 Markdown。

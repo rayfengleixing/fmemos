@@ -1,5 +1,6 @@
 mod commands;
 mod db;
+mod import;
 mod tags;
 
 use tauri::{
@@ -131,6 +132,7 @@ pub fn run() {
             commands::open_backup_dir,
             commands::list_backups,
             commands::restore_backup,
+            commands::import_path,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

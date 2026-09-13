@@ -22,6 +22,11 @@ interface Props {
   trashCount: number;
   trashActive: boolean;
   onOpenTrash: () => void;
+  /** 待办：未完成条数（徽标）；todoTotal 为所有待办总数，0 时不显示入口 */
+  todoCount: number;
+  todoTotal: number;
+  todoActive: boolean;
+  onOpenTodo: () => void;
   onOpenSettings: () => void;
   /** 打开某个标签的管理面板（重命名 / 合并 / 删除） */
   onManageTag: (tag: string) => void;
@@ -44,6 +49,10 @@ function Sidebar({
   trashCount,
   trashActive,
   onOpenTrash,
+  todoCount,
+  todoTotal,
+  todoActive,
+  onOpenTodo,
   onOpenSettings,
   onManageTag,
 }: Props) {
@@ -84,7 +93,9 @@ function Sidebar({
         )}
 
         <button
-          className={"side-item" + (activeTag === null && !untagged ? " active" : "")}
+          className={
+            "side-item" + (activeTag === null && !untagged && !trashActive && !todoActive ? " active" : "")
+          }
           onClick={onSelectAll}
         >
           全部笔记
@@ -95,6 +106,17 @@ function Sidebar({
           无标签
           <span className="side-count">{untaggedCount}</span>
         </button>
+
+        {todoTotal > 0 && (
+          <button
+            className={"side-item" + (todoActive ? " active" : "")}
+            title={`共 ${todoTotal} 项待办，未完成 ${todoCount} 项`}
+            onClick={onOpenTodo}
+          >
+            待办
+            <span className="side-count">{todoCount}</span>
+          </button>
+        )}
 
         {trashCount > 0 && (
           <button

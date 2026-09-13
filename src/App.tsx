@@ -7,9 +7,11 @@ import ReviewModal from "./components/ReviewModal";
 import SettingsModal from "./components/SettingsModal";
 import Sidebar from "./components/Sidebar";
 import TagManageModal from "./components/TagManageModal";
+import TodoView from "./components/TodoView";
 import * as api from "./lib/api";
 import { dateHeaderLabel, toDateKey } from "./lib/format";
 import { buildTagTree, countMemosWithTag, extractTags, tagMatchesPrefix } from "./lib/tags";
+import { collectTodos, todoStats } from "./lib/todo";
 import type { Memo, TagNode, ThemeMode } from "./lib/types";
 
 /** 卡片流分页大小：滚动到底部附近自动加载下一页 */
@@ -61,6 +63,10 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   /** 正在管理（重命名 / 合并 / 删除）的标签路径 */
   const [manageTag, setManageTag] = useState<string | null>(null);
+  /** 待办清单视图（纯前端聚合，和卡片流互斥） */
+  const [todoView, setTodoView] = useState(false);
+  /** 从待办清单点「原文」后要滚动定位到的卡片 id */
+  const [focusMemoId, setFocusMemoId] = useState<number | null>(null);
   const [toast, setToast] = useState<ToastState | null>(null);
   const toastTimer = useRef<number | undefined>(undefined);
 
@@ -270,13 +276,35 @@ export default function App() {
     [refresh, showToast],
   );
 
-  // 回收站操作
+  // 视图切换：卡片流 / 回收站 / 待办清单三者互斥，切换时都清空筛选回到「全部」语义
   const openTrash = useCallback(() => {
     setActiveTag(null);
     setActiveDate(null);
     setUntagged(false);
     setQuery("");
+    setTodoView(false);
     setTrashView(true);
+  }, []);
+
+  const openTodo = useCallback(() => {
+    setActiveTag(null);
+    setActiveDate(null);
+    setUntagged(false);
+    setQuery("");
+    setTrashView(false);
+    setTodoView(true);
+  }, []);
+
+  // 待办清单点「原文」：回到卡片流并定位该卡片；
+  // 卡片还没加载出来时由 focusMemoId 触发继续翻页（见下方 effect）
+  const openMemo = useCallback((id: number) => {
+    setTodoView(false);
+    setTrashView(false);
+    setActiveTag(null);
+    setActiveDate(null);
+    setUntagged(false);
+    setQuery("");
+    setFocusMemoId(id);
   }, []);
 
   const handleRestore = useCallback(
@@ -333,13 +361,14 @@ export default function App() {
     [refresh, showToast],
   );
 
-  // 从备份恢复后：数据整体换了，先回到「全部笔记」再刷新
-  const handleRestored = useCallback(async () => {
+  // 从备份恢复 / 批量导入后：数据整体换了，先回到「全部笔记」再刷新
+  const handleDataReloaded = useCallback(async () => {
     setActiveTag(null);
     setActiveDate(null);
     setUntagged(false);
     setQuery("");
     setTrashView(false);
+    setTodoView(false);
     await refresh();
   }, [refresh]);
 
@@ -348,6 +377,7 @@ export default function App() {
     setActiveDate(null);
     setUntagged(false);
     setTrashView(false);
+    setTodoView(false);
   }, []);
 
   const selectTag = useCallback((tag: string) => {
@@ -355,6 +385,7 @@ export default function App() {
     setActiveDate(null);
     setUntagged(false);
     setTrashView(false);
+    setTodoView(false);
   }, []);
 
   const selectUntagged = useCallback(() => {
@@ -362,6 +393,7 @@ export default function App() {
     setActiveDate(null);
     setUntagged(true);
     setTrashView(false);
+    setTodoView(false);
   }, []);
 
   const selectDate = useCallback((date: string | null) => {
@@ -369,6 +401,7 @@ export default function App() {
     setActiveTag(null);
     setUntagged(false);
     setTrashView(false);
+    setTodoView(false);
   }, []);
 
   // 「那年今日」候选：往年同月同日创建的笔记（倒序）
@@ -426,6 +459,24 @@ export default function App() {
     if (el.scrollTop + el.clientHeight >= el.scrollHeight - 400) void loadMore();
   }, [loadMore]);
 
+  // 从待办清单点「原文」跳过来：卡片已在列表里就滚过去；
+  // 还在后面的分页里就继续翻页，翻到底仍未出现才提示（正常不会发生，跳转时已清空筛选）
+  useEffect(() => {
+    if (focusMemoId === null) return;
+    const el = document.querySelector(`[data-memo-id="${focusMemoId}"]`);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      setFocusMemoId(null);
+      return;
+    }
+    if (hasMoreRef.current) {
+      void loadMore();
+      return;
+    }
+    setFocusMemoId(null);
+    showToast("没能在列表里找到这条笔记");
+  }, [focusMemoId, memos, loadMore, showToast]);
+
   const tags = useMemo(() => buildTagTree(allMemos), [allMemos]);
   // 标签路径平铺（树序即热度序），供输入框 # 自动补全
   const allTags = useMemo(() => {
@@ -444,8 +495,20 @@ export default function App() {
     () => allMemos.filter((m) => extractTags(m.content).length === 0).length,
     [allMemos],
   );
+  // 待办统计：侧栏徽标只取未完成条数；清单数据由 TodoView 自行聚合
+  const todoStat = useMemo(() => todoStats(collectTodos(allMemos)), [allMemos]);
 
-  // 标签治理弹窗：会改写多少条笔记（回收站里的也算）、可合并到哪些标签
+  const heatCounts = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const m of allMemos) {
+      const key = m.createdAt.slice(0, 10);
+      map.set(key, (map.get(key) ?? 0) + 1);
+    }
+    return map;
+  }, [allMemos]);
+
+  // 标签管理弹窗：影响条数按全量 + 回收站算（后端改动也含回收站），
+  // 合并候选排除自身、自己的子孙、以及自己的上级（都会造成自嵌套）
   const manageAffected = useMemo(
     () => (manageTag ? countMemosWithTag([...allMemos, ...trashMemos], manageTag) : 0),
     [manageTag, allMemos, trashMemos],
@@ -456,15 +519,6 @@ export default function App() {
       (t) => t !== manageTag && !t.startsWith(`${manageTag}/`) && !manageTag.startsWith(`${t}/`),
     );
   }, [allTags, manageTag]);
-
-  const heatCounts = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const m of allMemos) {
-      const key = m.createdAt.slice(0, 10);
-      map.set(key, (map.get(key) ?? 0) + 1);
-    }
-    return map;
-  }, [allMemos]);
 
   // 回顾弹窗标题
   const reviewTitle = review
@@ -509,6 +563,10 @@ export default function App() {
         trashCount={trashMemos.length}
         trashActive={trashView}
         onOpenTrash={openTrash}
+        todoCount={todoStat.pending}
+        todoTotal={todoStat.total}
+        todoActive={todoView}
+        onOpenTodo={openTodo}
         onOpenSettings={() => setSettingsOpen(true)}
         onManageTag={setManageTag}
       />
@@ -517,7 +575,7 @@ export default function App() {
           <div className="topbar">
             <input
               className="search"
-              placeholder="搜索笔记..."
+              placeholder={todoView ? "搜索待办..." : "搜索笔记..."}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
@@ -539,11 +597,19 @@ export default function App() {
             </div>
           )}
 
-          {!trashView && (
+          {!trashView && !todoView && (
             <Editor onCreate={handleCreate} focusSignal={focusSignal} allTags={allTags} />
           )}
 
-          {memos.length === 0 ? (
+          {todoView ? (
+            <TodoView
+              memos={allMemos}
+              searchTerms={searchTerms}
+              onUpdate={handleUpdate}
+              onTagClick={selectTag}
+              onOpenMemo={openMemo}
+            />
+          ) : memos.length === 0 ? (
             <div className="empty-state">
               {trashView ? (
                 "回收站是空的"
@@ -584,7 +650,7 @@ export default function App() {
             ))
           )}
 
-          {loadingMore && <div className="loading-more">加载中...</div>}
+          {!todoView && loadingMore && <div className="loading-more">加载中...</div>}
         </div>
       </main>
 
@@ -608,7 +674,7 @@ export default function App() {
           theme={theme}
           onThemeChange={setTheme}
           notify={showToast}
-          onRestored={handleRestored}
+          onDataReloaded={handleDataReloaded}
           onClose={() => setSettingsOpen(false)}
         />
       )}

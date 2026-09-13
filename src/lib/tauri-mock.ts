@@ -36,6 +36,9 @@ const memos: Memo[] = [
   { id: 4, content: "#读书 读了 30 页，先记个进度。", createdAt: stamp(1, "07:40:00"), updatedAt: stamp(1, "07:40:00") },
   { id: 5, content: "#运动 晨跑 5 公里。", createdAt: stamp(3, "07:00:00"), updatedAt: stamp(3, "07:00:00") },
   { id: 6, content: "没有标签的一条备忘。", createdAt: stamp(5, "22:00:00"), updatedAt: stamp(5, "22:00:00") },
+  // 待办清单视图的演示数据：带标签的、无标签的、已完成的都有
+  { id: 8, content: "#工作 本周要做的：\n- [ ] 写周报\n- [ ] 发版前回归测试\n- [x] 回邮件", createdAt: stamp(0, "10:20:00"), updatedAt: stamp(0, "10:20:00") },
+  { id: 9, content: "顺手记两件小事：\n- [ ] 换灯泡\n- [ ] 约牙医", createdAt: stamp(2, "20:00:00"), updatedAt: stamp(2, "20:00:00") },
 ];
 
 function listMemos(args: {
@@ -195,6 +198,16 @@ export function installBrowserMock(): void {
           ]);
         case "restore_backup":
           return Promise.resolve(memos.length);
+        // 浏览器模式没有真实文件系统 / 文件选择框：给一份空报告，链路能走通
+        case "import_path":
+          return Promise.resolve({
+            total: 0,
+            added: 0,
+            skipped: 0,
+            empty: 0,
+            files: 0,
+            samples: [] as string[],
+          });
         // 事件系统只需返回 id，浏览器里 quick-open 永远不会触发
         case "plugin:event|listen":
           return Promise.resolve(++nextId);

@@ -91,6 +91,25 @@ async function openExternal(url: string): Promise<void> {
   }
 }
 
+/**
+ * 纯函数：列出正文里的全部 TODO（含代码块之外的每一行，顺序与 toggleTodo 的下标一致）。
+ * 供待办聚合视图使用；跳过 ``` 围栏内的内容，与 parseBlocks / toggleTodo 保持同一套计数。
+ */
+export function listTodos(content: string): { text: string; done: boolean }[] {
+  const out: { text: string; done: boolean }[] = [];
+  let inFence = false;
+  for (const line of content.split("\n")) {
+    if (FENCE_RE.test(line)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    const m = TODO_RE.exec(line);
+    if (m) out.push({ text: m[2] ?? "", done: m[1] !== " " });
+  }
+  return out;
+}
+
 /** 纯函数：把正文第 todoIndex 个 TODO（与 parseBlocks 的计数一致，跳过代码块）切换完成态 */
 export function toggleTodo(content: string, todoIndex: number): string {
   const lines = content.split("\n");
@@ -367,4 +386,12 @@ export interface RenderOptions {
 
 export function renderMarkdown(content: string, opts: RenderOptions = {}): ReactNode {
   return renderBlocks(parseBlocks(content), opts.onTagClick, opts.onToggleTodo, opts.highlight);
+}
+
+/**
+ * 单行内联渲染（不含 <p> / <ul> 等块级包裹）：#标签 可点、**加粗**、链接、`行内代码`。
+ * 供待办清单等需要把正文片段放进行内元素（<span>）的场景复用。
+ */
+export function renderInline(line: string, opts: RenderOptions = {}): ReactNode[] {
+  return renderLine(line, opts.onTagClick, opts.highlight);
 }
