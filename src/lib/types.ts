@@ -26,6 +26,13 @@ export interface SavedFilter {
   filter: MemoFilter;
 }
 
+/** 已入库图片的元信息；字节走 get_image 单独取（base64） */
+export interface ImageInfo {
+  id: number;
+  mime: string;
+  sizeBytes: number;
+}
+
 /** 标签树节点：path 是从根到本级的完整路径（如 "读书/心理学"），count 含所有子孙 */
 export interface TagNode {
   name: string;

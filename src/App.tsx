@@ -742,7 +742,12 @@ export default function App() {
           )}
 
           {!trashView && !todoView && (
-            <Editor onCreate={handleCreate} focusSignal={focusSignal} allTags={allTags} />
+            <Editor
+              onCreate={handleCreate}
+              focusSignal={focusSignal}
+              allTags={allTags}
+              onError={setError}
+            />
           )}
 
           {/* 置顶区：独立于分页，置于日期分组之上；与下方分组共用 renderCard */}

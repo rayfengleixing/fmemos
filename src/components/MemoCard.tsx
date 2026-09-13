@@ -1,6 +1,8 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatTime } from "../lib/format";
 import { renderMarkdown, toggleTodo as toggleTodoInContent } from "../lib/md";
+import { insertAtCaret, useImagePaste } from "../lib/useImagePaste";
+import MemoImage from "./MemoImage";
 import TagInput from "./TagInput";
 import type { Memo } from "../lib/types";
 
@@ -41,6 +43,14 @@ function MemoCard({
   const [overflowing, setOverflowing] = useState(false); // 内容是否超过两行
   const [expanded, setExpanded] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
+  // 根节点 ref：编辑态下粘贴/拖入图片用（非编辑态图片走渲染）
+  const cardRef = useRef<HTMLDivElement>(null);
+
+  // 编辑态的图片粘贴：入库后在编辑框光标处插入引用
+  const { uploading } = useImagePaste(
+    cardRef,
+    (token) => insertAtCaret(cardRef.current, draft, setDraft, token),
+  );
 
   useEffect(() => {
     setExpanded(false);
@@ -83,12 +93,22 @@ function MemoCard({
 
   // Markdown 渲染结果按内容记忆化：父级重渲染而正文未变时不再重新解析
   const body = useMemo(
-    () => renderMarkdown(memo.content, { onTagClick, onToggleTodo: handleToggleTodo, highlight }),
+    () =>
+      renderMarkdown(memo.content, {
+        onTagClick,
+        onToggleTodo: handleToggleTodo,
+        highlight,
+        renderImage: (id, alt) => <MemoImage id={id} alt={alt} />,
+      }),
     [memo.content, onTagClick, handleToggleTodo, highlight],
   );
 
   return (
-    <div className={"memo-card" + (memo.pinnedAt ? " pinned" : "")} data-memo-id={memo.id}>
+    <div
+      className={"memo-card" + (memo.pinnedAt ? " pinned" : "")}
+      data-memo-id={memo.id}
+      ref={cardRef}
+    >
       {!editing && overflowing && (
         <button
           className="memo-expand"
@@ -115,6 +135,7 @@ function MemoCard({
             }}
           />
           <div className="memo-actions">
+            {uploading && <span className="memo-img-loading">图片上传中…</span>}
             <button className="btn-ghost" onClick={cancel}>
               取消
             </button>

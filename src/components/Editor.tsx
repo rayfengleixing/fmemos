@@ -1,5 +1,6 @@
 import { memo, useEffect, useRef, useState } from "react";
 import TagInput from "./TagInput";
+import { insertAtCaret, useImagePaste } from "../lib/useImagePaste";
 
 interface Props {
   onCreate: (content: string) => Promise<void>;
@@ -7,6 +8,8 @@ interface Props {
   focusSignal: number;
   /** 全部标签路径（按热度排序），供 # 自动补全 */
   allTags: string[];
+  /** 图片上传失败等提示（走 App 的错误横幅） */
+  onError?: (message: string) => void;
 }
 
 /** 未发送的草稿存 localStorage，重启 / 误关窗口后不丢 */
@@ -20,10 +23,17 @@ function loadDraft(): string {
   }
 }
 
-function Editor({ onCreate, focusSignal, allTags }: Props) {
+function Editor({ onCreate, focusSignal, allTags, onError }: Props) {
   const [content, setContent] = useState(loadDraft);
   const [sending, setSending] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+
+  // 粘贴 / 拖入图片：入库后在光标处插入 image:// 引用
+  const { uploading } = useImagePaste(
+    ref,
+    (token) => insertAtCaret(ref.current, content, setContent, token),
+    onError,
+  );
 
   // 草稿随输入即时保存；发送成功清空后移除
   useEffect(() => {
@@ -74,7 +84,9 @@ function Editor({ onCreate, focusSignal, allTags }: Props) {
       />
       <div className="editor-footer">
         <span className="editor-hint">
-          Ctrl + Enter 发送 · # 打标签 · 标签会自动归档到左侧
+          {uploading
+            ? "图片上传中…"
+            : "Ctrl + Enter 发送 · # 打标签 · 可直接粘贴图片"}
         </span>
         <button
           className="btn-primary"

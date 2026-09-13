@@ -4,6 +4,7 @@ import {
   listTodos,
   parseBlocks,
   splitHighlight,
+  splitImages,
   splitLinks,
   toggleTodo,
   trimUrl,
@@ -249,5 +250,48 @@ describe("TAG_PARTIAL_RE", () => {
     expect(partial("C# is not")).toBe(null);
     // 行首的 # 已被空格隔开，末尾是普通文本
     expect(partial("#a b")).toBe(null);
+  });
+});
+
+describe("splitImages", () => {
+  it("切出 image:// 引用，其余文本保持原样", () => {
+    expect(splitImages("看图 ![图片](image://12) 呢")).toEqual([
+      { kind: "text", value: "看图 " },
+      { kind: "image", value: "![图片](image://12)", id: 12, alt: "图片" },
+      { kind: "text", value: " 呢" },
+    ]);
+  });
+
+  it("没有图片引用时返回整段文本", () => {
+    expect(splitImages("普通文字 #标签")).toEqual([
+      { kind: "text", value: "普通文字 #标签" },
+    ]);
+  });
+
+  it("普通 URL 图片链接不算 image 引用", () => {
+    expect(splitImages("![图](https://example.com/a.png")).toEqual([
+      { kind: "text", value: "![图](https://example.com/a.png" },
+    ]);
+  });
+});
+
+describe("parseBlocks 图片块", () => {
+  it("独占一行的图片引用自成 image 块", () => {
+    expect(parseBlocks("前面一行\n![截图](image://7)\n后面一行")).toEqual([
+      { type: "p", lines: ["前面一行"] },
+      { type: "image", id: 7, alt: "截图" },
+      { type: "p", lines: ["后面一行"] },
+    ]);
+  });
+
+  it("行内的图片引用不拆块，留给行内渲染处理", () => {
+    const blocks = parseBlocks("看 ![图](image://3) 这张");
+    expect(blocks).toEqual([{ type: "p", lines: ["看 ![图](image://3) 这张"] }]);
+  });
+
+  it("代码块里的图片引用不解析", () => {
+    expect(parseBlocks("```\n![x](image://9)\n```")).toEqual([
+      { type: "code", lines: ["![x](image://9)"] },
+    ]);
   });
 });

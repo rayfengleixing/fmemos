@@ -1226,3 +1226,43 @@ li.todo-done .todo-text {
   font-size: 12px;
   color: var(--text-secondary);
 }
+
+/* ---------- 图片附件（image:// 引用渲染） ---------- */
+
+.md-image {
+  margin: 6px 0;
+}
+
+.memo-img {
+  max-width: 100%;
+  max-height: 320px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  cursor: zoom-in;
+  display: block;
+}
+
+.memo-img-loading,
+.memo-img-fallback {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* 点击放大预览：全屏遮罩，点任意处关闭 */
+.img-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.78);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: zoom-out;
+}
+
+.img-lightbox img {
+  max-width: 92vw;
+  max-height: 92vh;
+  border-radius: 6px;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.45);
+}

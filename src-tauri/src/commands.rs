@@ -781,13 +781,248 @@ pub fn export_to(
 ) -> Result<usize, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     let filter = filter.unwrap_or_default();
-    let (content, count) = if format.as_deref() == Some("json") {
+    let (mut content, count) = if format.as_deref() == Some("json") {
         build_export_json(&conn, &filter)?
     } else {
         build_export_markdown(&conn, &filter)?
     };
+    // 正文引用了图片：写到 <文件名>.assets/ 目录并把 image://<id> 改写成相对链接，
+    // 导出的 Markdown 拿到任何机器上图片都还能看
+    if content.contains(IMAGE_REF_PREFIX) {
+        let path_p = Path::new(&path);
+        let stem = path_p
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "export".into());
+        let assets = path_p
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join(format!("{stem}.assets"));
+        content = write_export_assets(&conn, &content, &assets, &format!("{stem}.assets"))?;
+    }
     std::fs::write(&path, content).map_err(|e| e.to_string())?;
     Ok(count)
+}
+
+// ===== 图片附件（BLOB 进库） =====
+
+/// 单张图片的元信息（不含字节）
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageInfo {
+    pub id: i64,
+    pub mime: String,
+    pub size_bytes: i64,
+}
+
+/// 读取图片：字节以 base64 返回，前端拼 data URL 渲染
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageData {
+    pub id: i64,
+    pub mime: String,
+    pub data: String,
+}
+
+/// 正文里图片引用的前缀，完整引用形如 `![图片](image://<id>)`
+pub const IMAGE_REF_PREFIX: &str = "image://";
+
+/// 单图大小上限：10 MB。截图一般 100KB～2MB，足够覆盖日常粘贴场景
+const IMAGE_MAX_BYTES: usize = 10 * 1024 * 1024;
+
+/// 纯函数：从文本里按出现顺序抽出全部 image://<id> 的 id（不去重）
+fn extract_image_refs(text: &str) -> Vec<i64> {
+    let mut ids = Vec::new();
+    let mut rest = text;
+    while let Some(pos) = rest.find(IMAGE_REF_PREFIX) {
+        let after = &rest[pos + IMAGE_REF_PREFIX.len()..];
+        let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(id) = digits.parse::<i64>() {
+            ids.push(id);
+        }
+        rest = &after[digits.len()..];
+    }
+    ids
+}
+
+/// 全库被引用的图片 id（memos 表含回收站，回收站里的也算引用）
+fn referenced_image_ids(conn: &Connection) -> Result<Vec<i64>, String> {
+    let contents: Vec<String> = {
+        let mut stmt = conn
+            .prepare("SELECT content FROM memos")
+            .map_err(|e| e.to_string())?;
+        let collected = stmt
+            .query_map([], |r| r.get(0))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<_, _>>()
+            .map_err(|e| e.to_string())?;
+        collected
+    };
+    Ok(contents.iter().flat_map(|c| extract_image_refs(c)).collect())
+}
+
+/// mime → 导出文件扩展名
+fn image_ext(mime: &str) -> &'static str {
+    match mime {
+        "image/png" => "png",
+        "image/jpeg" | "image/jpg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "image/svg+xml" => "svg",
+        "image/bmp" => "bmp",
+        _ => "bin",
+    }
+}
+
+/// 存一张图片：base64 进 → sha256 去重（相同字节秒传）→ BLOB 入库
+pub fn add_image_impl(conn: &Connection, data_base64: &str, mime: &str) -> Result<ImageInfo, String> {
+    use base64::Engine as _;
+    let data = base64::engine::general_purpose::STANDARD
+        .decode(data_base64.trim())
+        .map_err(|e| format!("图片数据不是有效的 base64：{e}"))?;
+    if data.is_empty() {
+        return Err("图片内容为空".into());
+    }
+    if data.len() > IMAGE_MAX_BYTES {
+        return Err(format!(
+            "图片超过 {} MB 上限，请压缩后再粘贴",
+            IMAGE_MAX_BYTES / 1024 / 1024
+        ));
+    }
+    let mime = if mime.starts_with("image/") {
+        mime.to_string()
+    } else {
+        "image/png".to_string()
+    };
+    use sha2::Digest;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(&data);
+    let hash: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    if let Ok(id) = conn.query_row("SELECT id FROM images WHERE sha256 = ?1", [&hash], |r| r.get::<_, i64>(0)) {
+        let size_bytes: i64 = conn
+            .query_row("SELECT size_bytes FROM images WHERE id = ?1", [id], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        return Ok(ImageInfo { id, mime, size_bytes });
+    }
+    conn.execute(
+        "INSERT INTO images (sha256, mime, size_bytes, data) VALUES (?1, ?2, ?3, ?4)",
+        params![hash, mime, data.len() as i64, data],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(ImageInfo {
+        id: conn.last_insert_rowid(),
+        mime,
+        size_bytes: data.len() as i64,
+    })
+}
+
+/// 读一张图片
+pub fn get_image_impl(conn: &Connection, id: i64) -> Result<ImageData, String> {
+    use base64::Engine as _;
+    let row: Option<(String, Vec<u8>)> = conn
+        .query_row(
+            "SELECT mime, data FROM images WHERE id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map(Some)
+        .or_else(|e| if e == rusqlite::Error::QueryReturnedNoRows { Ok(None) } else { Err(e) })
+        .map_err(|_| format!("图片 #{id} 不存在"))?;
+    let Some((mime, bytes)) = row else {
+        return Err(format!("图片 #{id} 不存在"));
+    };
+    Ok(ImageData {
+        id,
+        mime,
+        data: base64::engine::general_purpose::STANDARD.encode(bytes),
+    })
+}
+
+/// 清理孤儿图片：删除「无任何笔记引用 且 早于 older_than_hours 小时入库」的图。
+/// 留 24h 缓冲是保护还没保存的草稿图——粘贴后图片立刻入库，正文却还在编辑器里。
+pub fn cleanup_unused_images(conn: &Connection, older_than_hours: i64) -> Result<usize, String> {
+    let referenced: HashSet<i64> = referenced_image_ids(conn)?.into_iter().collect();
+    let cutoff: String = conn
+        .query_row(
+            "SELECT datetime('now','localtime', ?1)",
+            [format!("-{older_than_hours} hours")],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    let rows: Vec<(i64, String)> = {
+        let mut stmt = conn
+            .prepare("SELECT id, created_at FROM images")
+            .map_err(|e| e.to_string())?;
+        let collected = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<_, _>>()
+            .map_err(|e| e.to_string())?;
+        collected
+    };
+    let mut deleted = 0usize;
+    for (id, created_at) in rows {
+        // "YYYY-MM-DD HH:MM:SS" 字典序即时间序；太新的不动
+        if referenced.contains(&id) || created_at.as_str() >= cutoff.as_str() {
+            continue;
+        }
+        conn.execute("DELETE FROM images WHERE id = ?1", [id])
+            .map_err(|e| e.to_string())?;
+        deleted += 1;
+    }
+    Ok(deleted)
+}
+
+/// 导出联动：把正文引用的图片写到 assets_dir（img-<id>.<ext>），
+/// 并把 image://<id> 改写成 <url_prefix>/img-<id>.<ext>，返回改写后的正文。
+/// 单张图缺失只保留原引用，不阻塞整个导出。
+pub fn write_export_assets(
+    conn: &Connection,
+    content: &str,
+    assets_dir: &Path,
+    url_prefix: &str,
+) -> Result<String, String> {
+    std::fs::create_dir_all(assets_dir).map_err(|e| e.to_string())?;
+    let mut out = content.to_string();
+    for id in extract_image_refs(content) {
+        let row: Option<(String, Vec<u8>)> = conn
+            .query_row(
+                "SELECT mime, data FROM images WHERE id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map(Some)
+            .or_else(|e| {
+                if e == rusqlite::Error::QueryReturnedNoRows {
+                    Ok(None)
+                } else {
+                    Err(e)
+                }
+            })
+            .map_err(|e| e.to_string())?;
+        let Some((mime, bytes)) = row else { continue };
+        let name = format!("img-{id}.{}", image_ext(&mime));
+        let path = assets_dir.join(&name);
+        if !path.exists() {
+            std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+        }
+        out = out.replace(&format!("{IMAGE_REF_PREFIX}{id}"), &format!("{url_prefix}/{name}"));
+    }
+    Ok(out)
+}
+
+/// 存一张图片（前端把剪贴板/拖入的图片文件读成 base64 传进来）
+#[tauri::command]
+pub fn add_image(db: State<Db>, data: String, mime: Option<String>) -> Result<ImageInfo, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    add_image_impl(&conn, &data, mime.as_deref().unwrap_or("image/png"))
+}
+
+/// 读一张图片（字节 base64）
+#[tauri::command]
+pub fn get_image(db: State<Db>, id: i64) -> Result<ImageData, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    get_image_impl(&conn, id)
 }
 
 /// 导入报告：dry_run 时 added 表示「将新增」的条数
@@ -1606,6 +1841,77 @@ mod tests {
         // 空串等同删除该项
         db::write_setting(&conn, "md_export_dir", "").unwrap();
         assert!(db::read_setting(&conn, "md_export_dir").unwrap().is_none());
+    }
+
+    fn b64(bytes: &[u8]) -> String {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    }
+
+    #[test]
+    fn image_add_dedups_and_roundtrips() {
+        let conn = setup();
+        let data = b64(b"\x89PNG-fake-bytes");
+        let a = add_image_impl(&conn, &data, "image/png").unwrap();
+        let b = add_image_impl(&conn, &data, "image/png").unwrap();
+        // 相同字节去重（秒传）：同一个 id
+        assert_eq!(a.id, b.id);
+        assert_eq!(a.size_bytes, 15); // 原文字节数，不是 base64 长度
+
+        let got = get_image_impl(&conn, a.id).unwrap();
+        assert_eq!(got.mime, "image/png");
+        assert_eq!(got.data, data);
+        assert!(get_image_impl(&conn, 999).is_err());
+
+        // 非 image/ 开头的 mime 归一成 png；坏 base64 报错
+        let odd = add_image_impl(&conn, &b64(b"odd"), "application/octet-stream").unwrap();
+        assert_eq!(odd.mime, "image/png");
+        assert!(add_image_impl(&conn, "!!!not-base64!!!", "image/png").is_err());
+        assert!(add_image_impl(&conn, "", "image/png").is_err());
+    }
+
+    #[test]
+    fn image_cleanup_keeps_referenced_and_fresh() {
+        let conn = setup();
+        // 三张图：被引用的、无引用但很新的、无引用且过期的
+        let referenced = add_image_impl(&conn, &b64(b"img-1"), "image/png").unwrap();
+        let fresh = add_image_impl(&conn, &b64(b"img-2"), "image/png").unwrap();
+        let stale = add_image_impl(&conn, &b64(b"img-3"), "image/png").unwrap();
+        conn.execute(
+            "INSERT INTO memos (content, created_at, updated_at) VALUES (?1, datetime('now','localtime'), datetime('now','localtime'))",
+            [format!("看图 ![图片]({IMAGE_REF_PREFIX}{}) 呢", referenced.id)],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE images SET created_at = datetime('now','localtime','-48 hours') WHERE id = ?1",
+            [stale.id],
+        )
+        .unwrap();
+
+        let deleted = cleanup_unused_images(&conn, 24).unwrap();
+        assert_eq!(deleted, 1);
+        assert!(get_image_impl(&conn, referenced.id).is_ok());
+        assert!(get_image_impl(&conn, fresh.id).is_ok());
+        assert!(get_image_impl(&conn, stale.id).is_err());
+    }
+
+    #[test]
+    fn export_assets_rewrite_refs_and_write_files() {
+        let conn = setup();
+        let img = add_image_impl(&conn, &b64(b"png-bytes"), "image/png").unwrap();
+        let content = format!("开头 ![图片]({IMAGE_REF_PREFIX}{}) 结尾", img.id);
+        let dir = tests_support::temp_dir("export-assets");
+        let assets = dir.join("x.assets");
+        let out = write_export_assets(&conn, &content, &assets, "x.assets").unwrap();
+        assert_eq!(out, format!("开头 ![图片](x.assets/img-{}.png) 结尾", img.id));
+        assert!(assets.join(format!("img-{}.png", img.id)).exists());
+        // 再次导出不重复写文件；引用不存在的图保留原样
+        let missing = format!("![x]({IMAGE_REF_PREFIX}424242)");
+        assert_eq!(
+            write_export_assets(&conn, &missing, &assets, "x.assets").unwrap(),
+            missing
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

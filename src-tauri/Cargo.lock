@@ -1046,11 +1046,13 @@ dependencies = [
 
 [[package]]
 name = "fmemos"
-version = "0.6.0"
+version = "0.8.0"
 dependencies = [
+ "base64 0.22.1",
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-autostart",

@@ -17,6 +17,10 @@ pub fn init() -> Result<rusqlite::Connection, Box<dyn std::error::Error>> {
     let conn = open_conn(&exe_dir.join("fmemos.db"))?;
     auto_backup(&conn, &exe_dir);
     auto_export_markdown(&conn);
+    // 孤儿图片清理：只清「无引用且超过 24h」的——24h 是给还没保存的草稿图留的缓冲。
+    if let Err(e) = crate::commands::cleanup_unused_images(&conn, 24) {
+        eprintln!("image cleanup failed: {e}");
+    }
     Ok(conn)
 }
 
@@ -73,6 +77,17 @@ pub fn migrate(conn: &rusqlite::Connection) -> Result<(), Box<dyn std::error::Er
         CREATE TABLE IF NOT EXISTS settings (
             key   TEXT PRIMARY KEY,
             value TEXT NOT NULL
+        );
+
+        -- 图片附件：字节直接进库（BLOB），备份/恢复/同步天然覆盖。
+        -- sha256 唯一：同一张图重复粘贴只存一份。正文用 ![图片](image://<id>) 引用。
+        CREATE TABLE IF NOT EXISTS images (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            sha256     TEXT NOT NULL UNIQUE,
+            mime       TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            data       BLOB NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
         );",
     )?;
     // 软删除列（回收站）：NULL = 正常，非 NULL = 删除时间。老库补列。
@@ -220,6 +235,13 @@ pub(crate) fn auto_export_markdown(conn: &rusqlite::Connection) {
             return Ok(());
         }
         let (content, _) = crate::commands::build_export_markdown(conn, &Default::default())?;
+        // 正文引用了图片时，把图片写到 fmemos-images/ 并改写链接，导出的 Markdown 才是自包含的
+        let content = if content.contains("image://") {
+            let assets = dir.join("fmemos-images");
+            crate::commands::write_export_assets(conn, &content, &assets, "fmemos-images")?
+        } else {
+            content
+        };
         std::fs::write(&path, content)?;
         Ok(())
     };

@@ -11,6 +11,7 @@ export type Block =
   | { type: "ul"; lines: string[] }
   | { type: "ol"; lines: string[] }
   | { type: "todo"; items: { text: string; done: boolean }[] }
+  | { type: "image"; id: number; alt: string }
   | { type: "code"; lines: string[] };
 
 const FENCE_RE = /^```/;
@@ -18,6 +19,35 @@ const UL_RE = /^-\s+/;
 const OL_RE = /^\d+\.\s+/;
 /** GFM 风格任务项：`- [ ] 文字` / `- [x] 文字`，`]` 后必须跟空格或行尾 */
 const TODO_RE = /^- \[( |x|X)\](?: (.*))?$/;
+
+/** 图片引用：`![alt](image://<id>)`。image:// 是 FMemos 自定义 scheme，指向 images 表 */
+export const IMAGE_RE = /!\[([^\]]*)\]\(image:\/\/(\d+)\)/g;
+/** 独占一行的图片引用自成图片块 */
+const IMAGE_LINE_RE = /^!\[([^\]]*)\]\(image:\/\/(\d+)\)$/;
+
+export type ImageRender = (id: number, alt: string) => ReactNode;
+
+export interface ImagePart {
+  kind: "text" | "image";
+  value: string;
+  /** kind = "image" 时有效 */
+  id?: number;
+  alt?: string;
+}
+
+/** 纯函数：把文本按图片引用切分，供渲染与测试（语法不完整时按普通文本处理） */
+export function splitImages(text: string): ImagePart[] {
+  const parts: ImagePart[] = [];
+  let last = 0;
+  for (const m of text.matchAll(IMAGE_RE)) {
+    const idx = m.index ?? 0;
+    if (idx > last) parts.push({ kind: "text", value: text.slice(last, idx) });
+    parts.push({ kind: "image", value: m[0], id: Number(m[2]), alt: m[1] });
+    last = idx + m[0].length;
+  }
+  if (last < text.length) parts.push({ kind: "text", value: text.slice(last) });
+  return parts;
+}
 
 export type ListEnterAction =
   | { type: "exit"; markerLen: number }
@@ -152,6 +182,13 @@ export function parseBlocks(content: string): Block[] {
       blocks.push({ type: "code", lines: codeLines });
       continue;
     }
+    // 独占一行的图片引用自成图片块
+    const img = IMAGE_LINE_RE.exec(line.trim());
+    if (img) {
+      blocks.push({ type: "image", id: Number(img[2]), alt: img[1] });
+      i += 1;
+      continue;
+    }
     if (TODO_RE.test(line)) {
       const items: { text: string; done: boolean }[] = [];
       while (i < lines.length) {
@@ -192,6 +229,7 @@ export function parseBlocks(content: string): Block[] {
       lines[i].trim() !== "" &&
       !FENCE_RE.test(lines[i]) &&
       !TODO_RE.test(lines[i]) &&
+      !IMAGE_LINE_RE.test(lines[i].trim()) &&
       !UL_RE.test(lines[i]) &&
       !OL_RE.test(lines[i])
     ) {
@@ -284,8 +322,8 @@ function renderText(text: string, onTagClick?: TagClick, highlight?: string[]): 
   });
 }
 
-/** 单行渲染：先按 `行内代码` 切分，代码保持字面，其余文本做标签+加粗解析 */
-function renderLine(line: string, onTagClick?: TagClick, highlight?: string[]): ReactNode[] {
+/** 单行渲染（不含图片引用的文本部分）：先按 `行内代码` 切分，代码保持字面，其余文本做标签+加粗解析 */
+function renderLineBase(line: string, onTagClick?: TagClick, highlight?: string[]): ReactNode[] {
   const nodes: ReactNode[] = [];
   let last = 0;
   for (const m of line.matchAll(INLINE_CODE_RE)) {
@@ -308,11 +346,34 @@ function renderLine(line: string, onTagClick?: TagClick, highlight?: string[]): 
   return nodes;
 }
 
+/** 单行渲染：先切出图片引用（交给 renderImage），其余文本走标签/加粗/行内代码解析 */
+function renderLine(
+  line: string,
+  onTagClick?: TagClick,
+  highlight?: string[],
+  renderImage?: ImageRender,
+): ReactNode[] {
+  const parts = splitImages(line);
+  if (parts.every((p) => p.kind === "text")) {
+    return renderLineBase(line, onTagClick, highlight);
+  }
+  return parts.map((part, i) =>
+    part.kind === "image" ? (
+      <Fragment key={`img${i}`}>
+        {renderImage ? renderImage(part.id!, part.alt ?? "") : `【${part.alt || "图片"}】`}
+      </Fragment>
+    ) : (
+      <Fragment key={`t${i}`}>{renderLineBase(part.value, onTagClick, highlight)}</Fragment>
+    ),
+  );
+}
+
 export function renderBlocks(
   blocks: Block[],
   onTagClick?: TagClick,
   onToggleTodo?: TodoToggle,
   highlight?: string[],
+  renderImage?: ImageRender,
 ): ReactNode {
   // 全篇 TODO 顺序号：供勾选回写正文时定位（与 toggleTodo 计数一致）
   let todoOffset = 0;
@@ -326,7 +387,7 @@ export function renderBlocks(
             {block.lines.map((line, j) => (
               <Fragment key={j}>
                 {j > 0 && <br />}
-                {renderLine(line, onTagClick, highlight)}
+                {renderLine(line, onTagClick, highlight, renderImage)}
               </Fragment>
             ))}
           </p>
@@ -335,7 +396,7 @@ export function renderBlocks(
         return (
           <ul key={i}>
             {block.lines.map((item, j) => (
-              <li key={j}>{renderLine(item, onTagClick, highlight)}</li>
+              <li key={j}>{renderLine(item, onTagClick, highlight, renderImage)}</li>
             ))}
           </ul>
         );
@@ -343,7 +404,7 @@ export function renderBlocks(
         return (
           <ol key={i}>
             {block.lines.map((item, j) => (
-              <li key={j}>{renderLine(item, onTagClick, highlight)}</li>
+              <li key={j}>{renderLine(item, onTagClick, highlight, renderImage)}</li>
             ))}
           </ol>
         );
@@ -361,10 +422,23 @@ export function renderBlocks(
                 >
                   {item.done ? "✓" : ""}
                 </span>
-                <span className="todo-text">{renderLine(item.text, onTagClick, highlight)}</span>
+                <span className="todo-text">
+                  {renderLine(item.text, onTagClick, highlight, renderImage)}
+                </span>
               </li>
             ))}
           </ul>
+        );
+      case "image":
+        // 独占一行的图片块；没传 renderImage 的只读场景退化为文字占位
+        return (
+          <div key={i} className="md-image">
+            {renderImage ? (
+              renderImage(block.id, block.alt)
+            ) : (
+              <span className="memo-img-fallback">【{block.alt || "图片"}】</span>
+            )}
+          </div>
         );
       case "code":
         return (
@@ -382,16 +456,24 @@ export interface RenderOptions {
   onToggleTodo?: TodoToggle;
   /** 搜索结果高亮：这些关键词（不区分大小写）用 <mark> 标出；代码与链接内不高亮 */
   highlight?: string[];
+  /** 图片引用渲染：传入后 image:// 引用显示为真实图片；省略时退化为【图片】占位 */
+  renderImage?: ImageRender;
 }
 
 export function renderMarkdown(content: string, opts: RenderOptions = {}): ReactNode {
-  return renderBlocks(parseBlocks(content), opts.onTagClick, opts.onToggleTodo, opts.highlight);
+  return renderBlocks(
+    parseBlocks(content),
+    opts.onTagClick,
+    opts.onToggleTodo,
+    opts.highlight,
+    opts.renderImage,
+  );
 }
 
 /**
- * 单行内联渲染（不含 <p> / <ul> 等块级包裹）：#标签 可点、**加粗**、链接、`行内代码`。
+ * 单行内联渲染（不含 <p> / <ul> 等块级包裹）：#标签 可点、**加粗**、链接、`行内代码`、图片引用。
  * 供待办清单等需要把正文片段放进行内元素（<span>）的场景复用。
  */
 export function renderInline(line: string, opts: RenderOptions = {}): ReactNode[] {
-  return renderLine(line, opts.onTagClick, opts.highlight);
+  return renderLine(line, opts.onTagClick, opts.highlight, opts.renderImage);
 }

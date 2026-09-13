@@ -2,7 +2,7 @@
 
 flomo 风格的本地卡片笔记：**Tauri 2 + React 19 + SQLite**，数据完全存在本地，无账号、无网络依赖。
 
-![版本](https://img.shields.io/badge/版本-0.7.0-3eb477)
+![版本](https://img.shields.io/badge/版本-0.8.0-3eb477)
 
 ## 功能
 
@@ -62,7 +62,8 @@ flomo 风格的本地卡片笔记：**Tauri 2 + React 19 + SQLite**，数据完�
 
 - 自动备份：每天首次启动自动把完整数据库快照到程序旁 `backup/`，保留最近 5 份（SQLite 在线备份，WAL 下也是一致快照）
 - 从备份恢复：设置 → 「从备份恢复」列出全部备份，选中即可回滚；恢复前自动把当前数据另存为安全副本（`before-restore-*`，保留最近 3 份），且走在线备份 API 反向写回，**不用退出应用**、立即生效
-- 数据导出：设置 → 导出，格式可选 **Markdown**（便于阅读）或 **JSON**（保留精确时间戳、置顶状态与标签数组）；勾选「只导出当前筛选」就只导出正在看的那一批
+- 图片粘贴与附件：在输入框直接**粘贴或拖入**图片（编辑卡片时也可以），图片字节以 BLOB 存进数据库、正文用 `![图片](image://<id>)` 引用；卡片里显示缩略图，点击放大预览；相同图片自动去重只存一份
+- 数据导出：设置 → 导出，格式可选 **Markdown**（便于阅读）或 **JSON**（保留精确时间戳、置顶状态与标签数组）；勾选「只导出当前筛选」就只导出正在看的那一批；导出的 Markdown 会把引用图片写到同名 `.assets/` 目录，拿到别的机器图片也还在
 - 每日 Markdown 导出：设置里指定一个目录后，每天首次启动会顺带把全部笔记写一份 Markdown 到那里（文件名带日期）。适合丢进同步盘 / 网盘 —— 数据库快照在 WAL 下直接同步并不稳妥，Markdown 没有这个问题
 - 数据导入：设置 → 导入文件 / 导入文件夹，支持 flomo 导出的 HTML、以及 `.md` / `.markdown` / `.txt`（文件夹会递归扫描）
   - 按**归一化正文**去重：重复导入同一个文件不会翻倍，导错了也不会污染数据
@@ -112,16 +113,16 @@ npm test      # 在工作区根目录执行：Markdown 分块 / TODO / 标签树
 
 ```
 src/
-  components/   # Editor、MemoCard、Sidebar、TodoView、Heatmap、ReviewModal、TagManageModal、TagInput(+Textarea)
+  components/   # Editor、MemoCard、MemoImage、Sidebar、TodoView、Heatmap、ReviewModal、TagManageModal、TagInput(+Textarea)
   lib/
-    api.ts        # invoke 封装（分页、置顶、导入导出、设置项）
+    api.ts        # invoke 封装（分页、置顶、导入导出、设置项、图片）
     md.tsx        # 手写 Markdown 渲染（分块解析 + TODO/链接/加粗），纯函数可测
     tags.ts       # 标签解析、标签树构建、标签改写（与后端语义一致）
     todo.ts       # 待办聚合：提取 / 筛选 / 按标签或日期分组（纯前端，可测）
     format.ts     # 时间显示
     tauri-mock.ts # 浏览器调试用假后端
 src-tauri/src/
-  commands.rs   # Tauri 命令与业务实现（增删改查、分页、标签治理、备份恢复、导入、测试）
+  commands.rs   # Tauri 命令与业务实现（增删改查、分页、标签治理、备份恢复、导入、图片、测试）
   db.rs         # 连接初始化、建表迁移、派生数据版本门控重建、恢复后收尾
   tags.rs       # 后端标签提取与改写（与前端 tags.ts 保持一致）
   import.rs     # 导入解析：flomo HTML / Markdown 分节 / 文件夹扫描、去重键、时间戳校验
@@ -152,9 +153,10 @@ npm run tauri build   # 在 fmemos 目录执行
 - 置顶不参与分页：卡片流主列表用 `pinned_at IS NULL` 只查未置顶项（keyset 游标语义一行没改），置顶项另用 `pinned_at IS NOT NULL` 一次查完渲染在上方。「置顶优先」若直接混进排序，`(created_at, id)` 游标就不再单调，翻页必出重复或漏项
 - 导出不跟着主列表过滤：导出走 `pinned = None`（置顶项必须一起导出），并留了回归测试守着，防止「主列表排除置顶」把导出一起带偏
 - 设置项存储：`settings(key, value)` 键值表。每日 Markdown 导出的目标目录存在这里，启动时由后端自己读取（前端 localStorage 对后端不可见）；目录被删或换盘时静默跳过，不阻塞启动
+- 图片以 BLOB 进库：`images` 表存字节 + sha256 去重（相同图片秒传）。选 BLOB 而不是落盘，是为了让**自动备份 / 从备份恢复 / 便携同步天然覆盖图片**——备份仍然只是单个 db 文件；代价是库会变大（每张截图 100~300KB，SQLite 处理几万张毫无压力）
+- 图片引用与孤儿清理：正文用 `![图片](image://<id>)` 引用，Markdown 渲染器按引用取图。粘贴后图片立刻入库而正文可能还没保存，所以启动清理只删「无引用且超过 24 小时」的孤儿图，草稿不会丢图
 
 ## 后续路线
 
-- [ ] 图片粘贴与附件（**需先定存储策略**：图片以 BLOB 进库，还是落盘 + 备份时一起打包）
 - [ ] JSON 回灌：把导出的 JSON 重新导入，形成结构化备份闭环
 - [ ] 数据库加密（SQLCipher）

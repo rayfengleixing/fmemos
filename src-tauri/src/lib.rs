@@ -132,6 +132,8 @@ pub fn run() {
             commands::export_to,
             commands::get_setting,
             commands::set_setting,
+            commands::add_image,
+            commands::get_image,
             commands::open_backup_dir,
             commands::list_backups,
             commands::restore_backup,

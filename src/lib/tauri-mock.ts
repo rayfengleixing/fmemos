@@ -55,6 +55,9 @@ const memos: Memo[] = [
 /** 设置项（浏览器 mock）：与后端 settings 表同语义 */
 const settings = new Map<string, string>();
 
+/** 图片存储（浏览器 mock）：id → {mime, base64}，与后端 images 表同语义 */
+const images = new Map<number, { mime: string; data: string; sizeBytes: number }>();
+
 function listMemos(args: {
   tag?: string | null;
   query?: string | null;
@@ -221,12 +224,30 @@ export function installBrowserMock(): void {
           else settings.set(key, value);
           return Promise.resolve();
         }
+        // 图片：浏览器模式把 base64 存进 Map，同样按内容去重
+        case "add_image": {
+          const data = String(args.data ?? "");
+          const mime = String(args.mime ?? "image/png");
+          if (!data) return Promise.reject("图片内容为空");
+          for (const [id, v] of images) {
+            if (v.data === data) return Promise.resolve({ id, mime: v.mime, sizeBytes: v.sizeBytes });
+          }
+          const id = images.size > 0 ? Math.max(...images.keys()) + 1 : 1;
+          const sizeBytes = Math.floor((data.length * 3) / 4); // base64 长度估算
+          images.set(id, { mime, data, sizeBytes });
+          return Promise.resolve({ id, mime, sizeBytes });
+        }
+        case "get_image": {
+          const img = images.get(Number(args.id));
+          return img
+            ? Promise.resolve({ id: Number(args.id), mime: img.mime, data: img.data })
+            : Promise.reject(`图片 #${args.id} 不存在`);
+        }
         case "rename_tag": {
           const from = String(args.from).trim();
           const to = String(args.to).trim();
           if (!from || !to) return Promise.reject("标签名不能为空");
-          if (from === to) return Promise.reject("新标签名和原标签一样");
-          let n = 0;
+          if (from === to) return Promise.reject("新标签名和原标签一样");          let n = 0;
           for (const m of memos) {
             const next = renameTagInContent(m.content, from, to);
             if (next === null) continue;

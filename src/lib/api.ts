@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { BackupInfo, ExportFormat, ImportReport, Memo, MemoFilter } from "./types";
+import type { BackupInfo, ExportFormat, ImageInfo, ImportReport, Memo, MemoFilter } from "./types";
 
 export async function listMemos(
   opts: {
@@ -157,4 +157,16 @@ export function getSetting(key: string): Promise<string | null> {
 /** 写一个设置项；值为空串等同删除该项 */
 export function setSetting(key: string, value: string): Promise<void> {
   return invoke<void>("set_setting", { key, value });
+}
+
+/** 存一张图片（base64 字节），返回含 id 的元信息；相同字节后端自动去重 */
+export function addImage(data: string, mime: string): Promise<ImageInfo> {
+  return invoke<ImageInfo>("add_image", { data, mime });
+}
+
+/** 读一张图片：字节以 base64 返回，前端拼 data URL 渲染 */
+export function getImage(
+  id: number,
+): Promise<{ id: number; mime: string; data: string }> {
+  return invoke("get_image", { id });
 }
