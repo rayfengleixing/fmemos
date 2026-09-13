@@ -17,6 +17,7 @@ flomo 风格的本地卡片笔记：**Tauri 2 + React 19 + SQLite**，数据完�
 - 输入框自动增高：随内容长高（封顶半屏），多行列表不再憋在小框里滚动
 - 光标跟随：列表回车、标签补全等操作后，编辑框与页面滚动自动跟随，光标行始终可见
 - 增删改失败时顶部横幅提示，输入内容不丢失
+- 置顶：卡片上的「置顶」把笔记钉在列表最上方，卡片左侧出现主色竖条标识；置顶区独立于分页，不会随滚动加载被翻走
 
 **标签**
 
@@ -113,7 +114,7 @@ npm test      # 在工作区根目录执行：Markdown 分块 / TODO / 标签树
 src/
   components/   # Editor、MemoCard、Sidebar、TodoView、Heatmap、ReviewModal、TagManageModal、TagInput(+Textarea)
   lib/
-    api.ts        # invoke 封装（含分页参数、导入导出）
+    api.ts        # invoke 封装（分页、置顶、导入导出、设置项）
     md.tsx        # 手写 Markdown 渲染（分块解析 + TODO/链接/加粗），纯函数可测
     tags.ts       # 标签解析、标签树构建、标签改写（与后端语义一致）
     todo.ts       # 待办聚合：提取 / 筛选 / 按标签或日期分组（纯前端，可测）
@@ -154,7 +155,6 @@ npm run tauri build   # 在 fmemos 目录执行
 
 ## 后续路线
 
-- [ ] 快速输入小窗（置顶小号输入框）
-- [ ] 图片粘贴与附件
+- [ ] 图片粘贴与附件（**需先定存储策略**：图片以 BLOB 进库，还是落盘 + 备份时一起打包）
 - [ ] JSON 回灌：把导出的 JSON 重新导入，形成结构化备份闭环
 - [ ] 数据库加密（SQLCipher）

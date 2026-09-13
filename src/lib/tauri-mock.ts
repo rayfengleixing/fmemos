@@ -28,18 +28,32 @@ function lastYearTodayStamp(): string {
   return `${d.getFullYear() - 1}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} 10:00:00`;
 }
 
+/** 演示数据构造：updatedAt 取创建时间，pinnedAt 默认 null，省得每条都写全 */
+function demo(
+  id: number,
+  content: string,
+  createdAt: string,
+  pinnedAt: string | null = null,
+): Memo {
+  return { id, content, createdAt, updatedAt: createdAt, pinnedAt };
+}
+
 const memos: Memo[] = [
-  { id: 1, content: "欢迎使用 FMemos！正文里打 #标签 会自动归档到左侧，支持 #读书/心理学 这样的层级。", createdAt: stamp(0, "09:30:00"), updatedAt: stamp(0, "09:30:00") },
-  { id: 7, content: "去年今天记下的一条笔记，用来演示「那年今日」回顾。#回顾", createdAt: lastYearTodayStamp(), updatedAt: lastYearTodayStamp() },
-  { id: 2, content: "Markdown 试试：**加粗文字**、`行内代码`、- 列表项一\n- 列表项二\n\n```\nconst x = 1;\n```\n", createdAt: stamp(0, "08:12:00"), updatedAt: stamp(0, "08:12:00") },
-  { id: 3, content: "#读书/心理学 这本书讲到了锚定效应。", createdAt: stamp(1, "21:05:00"), updatedAt: stamp(1, "21:05:00") },
-  { id: 4, content: "#读书 读了 30 页，先记个进度。", createdAt: stamp(1, "07:40:00"), updatedAt: stamp(1, "07:40:00") },
-  { id: 5, content: "#运动 晨跑 5 公里。", createdAt: stamp(3, "07:00:00"), updatedAt: stamp(3, "07:00:00") },
-  { id: 6, content: "没有标签的一条备忘。", createdAt: stamp(5, "22:00:00"), updatedAt: stamp(5, "22:00:00") },
+  demo(1, "欢迎使用 FMemos！正文里打 #标签 会自动归档到左侧，支持 #读书/心理学 这样的层级。", stamp(0, "09:30:00")),
+  demo(7, "去年今天记下的一条笔记，用来演示「那年今日」回顾。#回顾", lastYearTodayStamp()),
+  demo(2, "Markdown 试试：**加粗文字**、`行内代码`、- 列表项一\n- 列表项二\n\n```\nconst x = 1;\n```\n", stamp(0, "08:12:00")),
+  // 置顶演示：让浏览器模式也能看到置顶区
+  demo(3, "#读书/心理学 这本书讲到了锚定效应。", stamp(1, "21:05:00"), stamp(0, "12:00:00")),
+  demo(4, "#读书 读了 30 页，先记个进度。", stamp(1, "07:40:00")),
+  demo(5, "#运动 晨跑 5 公里。", stamp(3, "07:00:00")),
+  demo(6, "没有标签的一条备忘。", stamp(5, "22:00:00")),
   // 待办清单视图的演示数据：带标签的、无标签的、已完成的都有
-  { id: 8, content: "#工作 本周要做的：\n- [ ] 写周报\n- [ ] 发版前回归测试\n- [x] 回邮件", createdAt: stamp(0, "10:20:00"), updatedAt: stamp(0, "10:20:00") },
-  { id: 9, content: "顺手记两件小事：\n- [ ] 换灯泡\n- [ ] 约牙医", createdAt: stamp(2, "20:00:00"), updatedAt: stamp(2, "20:00:00") },
+  demo(8, "#工作 本周要做的：\n- [ ] 写周报\n- [ ] 发版前回归测试\n- [x] 回邮件", stamp(0, "10:20:00")),
+  demo(9, "顺手记两件小事：\n- [ ] 换灯泡\n- [ ] 约牙医", stamp(2, "20:00:00")),
 ];
+
+/** 设置项（浏览器 mock）：与后端 settings 表同语义 */
+const settings = new Map<string, string>();
 
 function listMemos(args: {
   tag?: string | null;
@@ -47,6 +61,7 @@ function listMemos(args: {
   untagged?: boolean;
   date?: string | null;
   trash?: boolean | null;
+  pinned?: boolean | null;
   limit?: number | null;
   beforeCreatedAt?: string | null;
   beforeId?: number | null;
@@ -54,6 +69,9 @@ function listMemos(args: {
   let out = [...memos].filter((m) =>
     args.trash ? trashed.has(m.id) : !trashed.has(m.id),
   );
+  // 与后端一致：true = 只要置顶（置顶区），false = 只要未置顶（卡片流主列表）
+  if (args.pinned === true) out = out.filter((m) => m.pinnedAt !== null);
+  else if (args.pinned === false) out = out.filter((m) => m.pinnedAt === null);
   const tag = args.tag?.trim();
   if (tag) {
     out = out.filter((m) =>
@@ -72,10 +90,17 @@ function listMemos(args: {
   if (args.untagged) out = out.filter((m) => extractTags(m.content).length === 0);
   const date = args.date?.trim();
   if (date) out = out.filter((m) => m.createdAt.startsWith(date));
-  // 与后端一致：created_at DESC, id DESC；游标分页在排序后截取
-  out.sort((a, b) =>
-    a.createdAt === b.createdAt ? b.id - a.id : a.createdAt < b.createdAt ? 1 : -1,
-  );
+  // 与后端一致：置顶区按 pinned_at DESC，其余按 created_at DESC, id DESC。
+  // 游标分页在排序后截取——置顶项不参与分页，所以游标始终单调。
+  out.sort((a, b) => {
+    if (args.pinned === true) {
+      const pa = a.pinnedAt ?? "";
+      const pb = b.pinnedAt ?? "";
+      if (pa !== pb) return pa < pb ? 1 : -1;
+      return b.id - a.id;
+    }
+    return a.createdAt === b.createdAt ? b.id - a.id : a.createdAt < b.createdAt ? 1 : -1;
+  });
   if (args.beforeCreatedAt) {
     const at = args.beforeCreatedAt;
     const id = args.beforeId ?? 0;
@@ -103,6 +128,7 @@ export function installBrowserMock(): void {
             content: String(args.content).trim(),
             createdAt: nowStamp(),
             updatedAt: nowStamp(),
+            pinnedAt: null,
           };
           memos.unshift(memo);
           return Promise.resolve(memo);
@@ -140,8 +166,43 @@ export function installBrowserMock(): void {
           trashed.clear();
           return Promise.resolve(n);
         }
-        case "export_markdown": {
-          const active = memos.filter((m) => !trashed.has(m.id));
+        case "set_pin": {
+          const memo = memos.find((m) => m.id === args.id);
+          if (!memo) return Promise.reject(`memo #${args.id} 不存在`);
+          memo.pinnedAt = args.pinned ? nowStamp() : null;
+          return Promise.resolve(memo);
+        }
+        // 导出：与后端一样支持 format（md / json）与筛选条件
+        case "export_text": {
+          const f = (args.filter ?? {}) as {
+            tag?: string | null;
+            query?: string | null;
+            untagged?: boolean;
+            date?: string | null;
+          };
+          const active = listMemos({
+            tag: f.tag ?? null,
+            query: f.query ?? null,
+            untagged: f.untagged ?? false,
+            date: f.date ?? null,
+          });
+          if (args.format === "json") {
+            const items = active.map((m) => ({ ...m, tags: extractTags(m.content) }));
+            return Promise.resolve(
+              JSON.stringify(
+                {
+                  app: "FMemos",
+                  version: "mock",
+                  exportedAt: nowStamp(),
+                  count: items.length,
+                  filter: f,
+                  memos: items,
+                },
+                null,
+                2,
+              ),
+            );
+          }
           const lines = [
             "# FMemos 导出",
             "",
@@ -150,6 +211,15 @@ export function installBrowserMock(): void {
           ];
           for (const m of active) lines.push(`## ${m.createdAt}`, "", m.content, "", "---", "");
           return Promise.resolve(lines.join("\n"));
+        }
+        case "get_setting":
+          return Promise.resolve(settings.get(String(args.key)) ?? null);
+        case "set_setting": {
+          const key = String(args.key);
+          const value = String(args.value ?? "");
+          if (!value.trim()) settings.delete(key);
+          else settings.set(key, value);
+          return Promise.resolve();
         }
         case "rename_tag": {
           const from = String(args.from).trim();

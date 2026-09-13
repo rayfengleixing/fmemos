@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import * as api from "../lib/api";
-import type { BackupInfo, ThemeMode } from "../lib/types";
+import type { BackupInfo, ExportFormat, MemoFilter, ThemeMode } from "../lib/types";
 
 const THEME_LABEL: Record<ThemeMode, string> = {
   light: "浅色",
@@ -18,6 +18,10 @@ function fmtSize(bytes: number): string {
 interface Props {
   theme: ThemeMode;
   onThemeChange: (theme: ThemeMode) => void;
+  /** 当前筛选条件，供「只导出当前筛选」使用 */
+  currentFilter: MemoFilter;
+  /** 当前筛选的可读描述（如 `#读书`）；无筛选时为空串 */
+  filterLabel: string;
   /** 操作结果提示（走 App 的浮条） */
   notify: (text: string) => void;
   /** 数据整体变化后调用（从备份恢复 / 批量导入）：App 侧重新拉数据并回到「全部笔记」 */
@@ -28,6 +32,8 @@ interface Props {
 export default function SettingsModal({
   theme,
   onThemeChange,
+  currentFilter,
+  filterLabel,
   notify,
   onDataReloaded,
   onClose,
@@ -36,6 +42,9 @@ export default function SettingsModal({
   const [backups, setBackups] = useState<BackupInfo[] | null>(null);
   const [restoring, setRestoring] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
+  const [format, setFormat] = useState<ExportFormat>("md");
+  const [onlyFiltered, setOnlyFiltered] = useState(false);
+  const [mdDir, setMdDir] = useState<string | null>(null);
 
   useEffect(() => {
     // 浏览器调试模式没有该命令，回退显示 dev
@@ -52,13 +61,52 @@ export default function SettingsModal({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const exportMarkdown = async () => {
+  /** 每日 Markdown 导出的目录：存在后端 settings 表里，启动时由后端自己读取 */
+  useEffect(() => {
+    api
+      .getSetting("md_export_dir")
+      .then(setMdDir)
+      .catch(() => setMdDir(null));
+  }, []);
+
+  const exportNow = async () => {
     try {
-      const result = await api.exportMemos();
+      const filter = onlyFiltered && filterLabel ? currentFilter : null;
+      const result = await api.exportMemos(format, filter);
       if (result === "file") notify("已导出到所选位置");
       else if (result === "download") notify("已通过浏览器下载");
     } catch (e) {
       notify(`导出失败：${e}`);
+    }
+  };
+
+  const pickMdDir = async () => {
+    let picked: string;
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const r = await open({ title: "选择每日 Markdown 导出的目录", directory: true });
+      if (typeof r !== "string") return;
+      picked = r;
+    } catch {
+      notify("浏览器调试模式没有目录选择框，请在应用里设置");
+      return;
+    }
+    try {
+      await api.setSetting("md_export_dir", picked);
+      setMdDir(picked);
+      notify("已开启每日 Markdown 导出");
+    } catch (e) {
+      notify(`设置失败：${e}`);
+    }
+  };
+
+  const clearMdDir = async () => {
+    try {
+      await api.setSetting("md_export_dir", "");
+      setMdDir(null);
+      notify("已关闭每日 Markdown 导出");
+    } catch (e) {
+      notify(`关闭失败：${e}`);
     }
   };
 
@@ -232,10 +280,56 @@ export default function SettingsModal({
 
         <div className="settings-section">
           <div className="settings-label">导出</div>
-          <p className="settings-desc">将全部笔记导出为一个 Markdown 文件（含创建时间，标签随正文保留）。</p>
-          <button className="btn-ghost" onClick={() => void exportMarkdown()}>
-            导出为 Markdown
-          </button>
+          <p className="settings-desc">
+            Markdown 便于阅读；JSON 会额外保留精确时间戳、置顶状态与标签数组，适合结构化备份。
+          </p>
+          <div className="seg">
+            {(["md", "json"] as const).map((f) => (
+              <button
+                key={f}
+                className={"seg-item" + (format === f ? " active" : "")}
+                onClick={() => setFormat(f)}
+              >
+                {f === "md" ? "Markdown" : "JSON"}
+              </button>
+            ))}
+          </div>
+          {filterLabel && (
+            <label className="settings-check">
+              <input
+                type="checkbox"
+                checked={onlyFiltered}
+                onChange={(e) => setOnlyFiltered(e.target.checked)}
+              />
+              只导出当前筛选（{filterLabel}）
+            </label>
+          )}
+          <div className="settings-actions">
+            <button className="btn-ghost" onClick={() => void exportNow()}>
+              导出{format === "md" ? "为 Markdown" : "为 JSON"}
+            </button>
+          </div>
+        </div>
+
+        <div className="settings-section">
+          <div className="settings-label">每日 Markdown 导出</div>
+          <p className="settings-desc">
+            指定一个目录后，每天首次启动会顺带把全部笔记写一份 Markdown 到那里（文件名带日期）。
+            适合丢进同步盘或网盘——数据库快照在 WAL 下直接同步并不稳妥，Markdown 没这个问题。
+          </p>
+          <div className="settings-actions">
+            <button className="btn-ghost" onClick={() => void pickMdDir()}>
+              选择目录
+            </button>
+            {mdDir && (
+              <button className="btn-ghost" onClick={() => void clearMdDir()}>
+                关闭
+              </button>
+            )}
+          </div>
+          <p className="settings-desc settings-note">
+            {mdDir ? `当前目录：${mdDir}` : "当前：未开启"}
+          </p>
         </div>
 
         <div className="settings-section">

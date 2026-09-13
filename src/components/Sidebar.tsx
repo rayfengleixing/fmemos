@@ -1,6 +1,6 @@
 import { Fragment, memo, useState } from "react";
 import Heatmap from "./Heatmap";
-import type { TagNode } from "../lib/types";
+import type { SavedFilter, TagNode } from "../lib/types";
 
 interface Props {
   total: number;
@@ -30,6 +30,13 @@ interface Props {
   onOpenSettings: () => void;
   /** 打开某个标签的管理面板（重命名 / 合并 / 删除） */
   onManageTag: (tag: string) => void;
+  /** 智能列表：已保存的筛选组合，一键切回 */
+  savedFilters: SavedFilter[];
+  /** 当前有筛选条件时才允许保存 */
+  canSaveFilter: boolean;
+  onApplySavedFilter: (f: SavedFilter) => void;
+  onSaveCurrentFilter: () => void;
+  onDeleteSavedFilter: (id: string) => void;
 }
 
 function Sidebar({
@@ -55,6 +62,11 @@ function Sidebar({
   onOpenTodo,
   onOpenSettings,
   onManageTag,
+  savedFilters,
+  canSaveFilter,
+  onApplySavedFilter,
+  onSaveCurrentFilter,
+  onDeleteSavedFilter,
 }: Props) {
   // 记录被展开的节点路径；默认全部收起，点开的层级在新笔记进来后保持展开
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -126,6 +138,43 @@ function Sidebar({
             回收站
             <span className="side-count">{trashCount}</span>
           </button>
+        )}
+
+        {(savedFilters.length > 0 || canSaveFilter) && (
+          <>
+            <div className="side-section">智能列表</div>
+            {savedFilters.map((f) => (
+              <button
+                key={f.id}
+                className="side-item"
+                title="应用这个筛选"
+                onClick={() => onApplySavedFilter(f)}
+              >
+                {f.name}
+                {/* 用 span 而非 button：外层已经是按钮，嵌套 button 是非法结构 */}
+                <span
+                  className="tag-more"
+                  role="button"
+                  title="删除这个智能列表"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDeleteSavedFilter(f.id);
+                  }}
+                >
+                  ×
+                </span>
+              </button>
+            ))}
+            {canSaveFilter && (
+              <button
+                className="side-item side-add"
+                title="把当前筛选存下来，下次一键切回"
+                onClick={onSaveCurrentFilter}
+              >
+                ＋ 保存当前筛选
+              </button>
+            )}
+          </>
         )}
 
         {tags.length > 0 && <div className="side-section">标签</div>}

@@ -16,6 +16,7 @@ pub fn init() -> Result<rusqlite::Connection, Box<dyn std::error::Error>> {
         .to_path_buf();
     let conn = open_conn(&exe_dir.join("fmemos.db"))?;
     auto_backup(&conn, &exe_dir);
+    auto_export_markdown(&conn);
     Ok(conn)
 }
 
@@ -66,7 +67,13 @@ pub fn migrate(conn: &rusqlite::Connection) -> Result<(), Box<dyn std::error::Er
             tag     TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_memo_tags_memo ON memo_tags(memo_id);
-        CREATE INDEX IF NOT EXISTS idx_memo_tags_tag  ON memo_tags(tag);",
+        CREATE INDEX IF NOT EXISTS idx_memo_tags_tag  ON memo_tags(tag);
+
+        -- 通用键值设置：目前放每日 Markdown 导出的目标目录等
+        CREATE TABLE IF NOT EXISTS settings (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );",
     )?;
     // 软删除列（回收站）：NULL = 正常，非 NULL = 删除时间。老库补列。
     let has_deleted_at: bool = conn.query_row(
@@ -77,6 +84,20 @@ pub fn migrate(conn: &rusqlite::Connection) -> Result<(), Box<dyn std::error::Er
     if !has_deleted_at {
         conn.execute("ALTER TABLE memos ADD COLUMN deleted_at TEXT", [])?;
     }
+    // 置顶列：NULL = 未置顶，非 NULL = 置顶时间。老库补列。
+    let has_pinned_at: bool = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('memos') WHERE name = 'pinned_at'",
+        [],
+        |r| r.get(0),
+    )?;
+    if !has_pinned_at {
+        conn.execute("ALTER TABLE memos ADD COLUMN pinned_at TEXT", [])?;
+    }
+    // 部分索引：只索引置顶项（数量少）。必须放在补列之后，否则老库建索引时列还不存在。
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memos_pinned ON memos(pinned_at) WHERE pinned_at IS NOT NULL",
+        [],
+    )?;
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if version < DERIVED_VERSION {
         rebuild_derived(conn)?;
@@ -146,4 +167,63 @@ pub fn rebuild_derived(conn: &rusqlite::Connection) -> Result<(), Box<dyn std::e
     }
     tx.commit()?;
     Ok(())
+}
+
+/// 读一个设置项；键不存在返回 None。
+pub fn read_setting(
+    conn: &rusqlite::Connection,
+    key: &str,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let mut stmt = conn.prepare("SELECT value FROM settings WHERE key = ?1")?;
+    let mut rows = stmt.query([key])?;
+    Ok(match rows.next()? {
+        Some(row) => Some(row.get(0)?),
+        None => None,
+    })
+}
+
+/// 写一个设置项（不存在则插入，存在则覆盖）；值为空串等同于删除该项。
+pub fn write_setting(
+    conn: &rusqlite::Connection,
+    key: &str,
+    value: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if value.trim().is_empty() {
+        conn.execute("DELETE FROM settings WHERE key = ?1", [key])?;
+        return Ok(());
+    }
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        rusqlite::params![key, value],
+    )?;
+    Ok(())
+}
+
+/// 每日 Markdown 导出：设置里配了目标目录时，每天首次启动顺带写一份可读的 Markdown。
+/// 面向「丢进同步盘 / 网盘」的场景——WAL 下的 db 快照直接同步并不友好，Markdown 没有这个问题。
+/// 任何失败只记日志，绝不阻塞启动。
+pub(crate) fn auto_export_markdown(conn: &rusqlite::Connection) {
+    let run = || -> Result<(), Box<dyn std::error::Error>> {
+        let Some(dir) = read_setting(conn, "md_export_dir")? else {
+            return Ok(());
+        };
+        let dir = PathBuf::from(dir);
+        if !dir.is_dir() {
+            // 目录被删/换盘了，静默跳过，等用户重新设置
+            return Ok(());
+        }
+        let day: String =
+            conn.query_row("SELECT strftime('%Y%m%d','now','localtime')", [], |r| r.get(0))?;
+        let path = dir.join(format!("fmemos-{day}.md"));
+        if path.exists() {
+            return Ok(());
+        }
+        let (content, _) = crate::commands::build_export_markdown(conn, &Default::default())?;
+        std::fs::write(&path, content)?;
+        Ok(())
+    };
+    if let Err(e) = run() {
+        eprintln!("daily markdown export failed: {e}");
+    }
 }

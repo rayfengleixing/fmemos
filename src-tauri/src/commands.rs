@@ -17,6 +17,8 @@ pub struct Memo {
     pub content: String,
     pub created_at: String,
     pub updated_at: String,
+    /// 置顶时间；null = 未置顶
+    pub pinned_at: Option<String>,
 }
 
 fn row_to_memo(row: &Row) -> rusqlite::Result<Memo> {
@@ -25,10 +27,11 @@ fn row_to_memo(row: &Row) -> rusqlite::Result<Memo> {
         content: row.get("content")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
+        pinned_at: row.get("pinned_at")?,
     })
 }
 
-const MEMO_COLS: &str = "id, content, created_at, updated_at";
+const MEMO_COLS: &str = "id, content, created_at, updated_at, pinned_at";
 
 fn non_empty(s: Option<&str>) -> Option<&str> {
     s.map(str::trim).filter(|s| !s.is_empty())
@@ -62,7 +65,11 @@ pub fn create_memo_impl(conn: &Connection, content: &str) -> Result<Memo, String
 /// - untagged：只看没有标签的记录；
 /// - date：按创建日期 "YYYY-MM-DD" 过滤；
 /// - trash：true 时只列出回收站中的 memo；
+/// - pinned：None = 不筛；Some(true) = 只列置顶；Some(false) = 只列未置顶（卡片流主列表用）；
 /// - limit + beforeCreatedAt/beforeId：keyset 分页（游标为 (created_at, id)）。
+///
+/// 置顶项**不参与分页**：主列表用 pinned=Some(false) 查，置顶区另用 pinned=Some(true) 一次查完
+/// （置顶数量有限，不需要翻页）。这样游标始终单调，现有 keyset 分页逻辑一行都不用改。
 #[tauri::command]
 pub fn list_memos(
     db: State<Db>,
@@ -71,6 +78,7 @@ pub fn list_memos(
     untagged: Option<bool>,
     date: Option<String>,
     trash: Option<bool>,
+    pinned: Option<bool>,
     limit: Option<i64>,
     before_created_at: Option<String>,
     before_id: Option<i64>,
@@ -87,6 +95,7 @@ pub fn list_memos(
         untagged.unwrap_or(false),
         date,
         trash.unwrap_or(false),
+        pinned,
         limit,
         before,
     )
@@ -101,7 +110,7 @@ pub fn list_memos_impl(
     untagged: bool,
     date: Option<String>,
 ) -> Result<Vec<Memo>, String> {
-    list_memos_page(conn, tag, query, untagged, date, false, None, None)
+    list_memos_page(conn, tag, query, untagged, date, false, None, None, None)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -112,6 +121,7 @@ pub fn list_memos_page(
     untagged: bool,
     date: Option<String>,
     trash: bool,
+    pinned: Option<bool>,
     limit: Option<i64>,
     before: Option<(String, i64)>,
 ) -> Result<Vec<Memo>, String> {
@@ -179,6 +189,12 @@ pub fn list_memos_page(
         args.push(format!("{date}%"));
     }
 
+    match pinned {
+        Some(true) => sql.push_str(" AND memos.pinned_at IS NOT NULL"),
+        Some(false) => sql.push_str(" AND memos.pinned_at IS NULL"),
+        None => {}
+    }
+
     if let Some((before_at, before_id)) = before {
         sql.push_str(" AND ");
         sql.push_str("(memos.created_at < ? OR (memos.created_at = ? AND memos.id < ?))");
@@ -187,7 +203,12 @@ pub fn list_memos_page(
         args.push(before_id.to_string());
     }
 
-    sql.push_str(" ORDER BY created_at DESC, id DESC");
+    // 置顶区按「最近置顶在前」；主列表仍按创建时间倒序（keyset 游标语义完全不变）
+    sql.push_str(if pinned == Some(true) {
+        " ORDER BY pinned_at DESC, id DESC"
+    } else {
+        " ORDER BY created_at DESC, id DESC"
+    });
     if let Some(limit) = limit {
         // 钳制后是可信整数，直接拼入 SQL
         sql.push_str(&format!(" LIMIT {}", limit.clamp(1, 500)));
@@ -281,6 +302,33 @@ pub fn empty_trash_impl(conn: &Connection) -> Result<usize, String> {
     .map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(n)
+}
+
+/// 全库（含回收站）的 (id, content)。标签治理要连回收站一起改，
+/// 否则恢复出来的笔记会带着已经改掉的旧标签。
+/// 设置 / 取消置顶：pinned = true 打上当前时间（最近置顶的排在前面），false 清空。
+/// 返回更新后的 memo，前端可以直接替换这一条而不用整表重拉。
+pub fn set_pin_impl(conn: &Connection, id: i64, pinned: bool) -> Result<Memo, String> {
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    let changed = tx
+        .execute(
+            "UPDATE memos SET pinned_at = CASE WHEN ?2 THEN datetime('now','localtime') ELSE NULL END \
+             WHERE id = ?1",
+            params![id, pinned],
+        )
+        .map_err(|e| e.to_string())?;
+    if changed == 0 {
+        return Err("这条笔记不存在（可能已被彻底删除）".into());
+    }
+    let memo = tx
+        .query_row(
+            &format!("SELECT {MEMO_COLS} FROM memos WHERE id = ?1"),
+            params![id],
+            row_to_memo,
+        )
+        .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(memo)
 }
 
 fn all_memo_contents(conn: &Connection) -> Result<Vec<(i64, String)>, String> {
@@ -536,14 +584,77 @@ pub fn restore_backup(db: State<Db>, path: String) -> Result<usize, String> {
     restore_backup_impl(&mut conn, &src, &canonical_dir)
 }
 
-/// 构建全量 Markdown 导出内容，返回（内容, 条数）。
-pub fn build_export_markdown(conn: &Connection) -> Result<(String, usize), String> {
-    let memos = list_memos_page(conn, None, None, false, None, false, None, None)?;
+/// 导出筛选条件：与 list_memos 的前几个过滤参数同源，全为空 = 导出全部。
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportFilter {
+    pub tag: Option<String>,
+    pub query: Option<String>,
+    #[serde(default)]
+    pub untagged: bool,
+    pub date: Option<String>,
+}
+
+impl ExportFilter {
+    /// 是否没有任何筛选（等价于导出全部）
+    pub fn is_all(&self) -> bool {
+        non_empty(self.tag.as_deref()).is_none()
+            && non_empty(self.query.as_deref()).is_none()
+            && non_empty(self.date.as_deref()).is_none()
+            && !self.untagged
+    }
+
+    /// 人类可读的筛选描述，写进导出文件的抬头，免得事后分不清导的是哪一批
+    pub fn describe(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(t) = non_empty(self.tag.as_deref()) {
+            parts.push(format!("#{t}"));
+        }
+        if let Some(q) = non_empty(self.query.as_deref()) {
+            parts.push(format!("搜索「{q}」"));
+        }
+        if let Some(d) = non_empty(self.date.as_deref()) {
+            parts.push(d.to_string());
+        }
+        if self.untagged {
+            parts.push("无标签".into());
+        }
+        parts.join(" · ")
+    }
+}
+
+/// 取导出用的笔记列表。pinned 传 None —— 置顶项也必须导出，不能漏。
+fn export_memos(conn: &Connection, filter: &ExportFilter) -> Result<Vec<Memo>, String> {
+    list_memos_page(
+        conn,
+        filter.tag.clone(),
+        filter.query.clone(),
+        filter.untagged,
+        filter.date.clone(),
+        false,
+        None,
+        None,
+        None,
+    )
+}
+
+/// 构建 Markdown 导出内容，返回（内容, 条数）。
+/// 注意：Markdown 会丢时间戳精度与置顶状态，结构化备份请走 build_export_json。
+pub fn build_export_markdown(
+    conn: &Connection,
+    filter: &ExportFilter,
+) -> Result<(String, usize), String> {
+    let memos = export_memos(conn, filter)?;
     let now: String = conn
         .query_row("SELECT datetime('now', 'localtime')", [], |r| r.get(0))
         .map_err(|e| e.to_string())?;
+    let scope = if filter.is_all() {
+        String::new()
+    } else {
+        format!(" · 筛选：{}", filter.describe())
+    };
     let mut out = format!(
-        "# FMemos 导出\n\n> 导出时间：{now} · 共 {} 条\n\n",
+        "# FMemos 导出\n\n> 导出时间：{now} · 共 {} 条{scope}\n\n",
         memos.len()
     );
     for m in &memos {
@@ -552,18 +663,129 @@ pub fn build_export_markdown(conn: &Connection) -> Result<(String, usize), Strin
     Ok((out, memos.len()))
 }
 
-/// 导出全部笔记为 Markdown 文本（浏览器模式用 Blob 下载）。
-#[tauri::command]
-pub fn export_markdown(db: State<Db>) -> Result<String, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    build_export_markdown(&conn).map(|(s, _)| s)
+/// JSON 导出里的一条笔记：比界面上的 Memo 多带标签数组，方便外部工具直接消费。
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportMemo {
+    pub id: i64,
+    pub content: String,
+    pub created_at: String,
+    pub updated_at: String,
+    /// 置顶时间；null = 未置顶
+    pub pinned_at: Option<String>,
+    /// 正文里解析出的标签（含层级）
+    pub tags: Vec<String>,
 }
 
-/// 导出全部笔记到系统另存为对话框选定的路径，返回导出条数。
+/// 批量取这些笔记的标签：一条 SQL 查完再在内存里聚合，避免逐条查询。
+fn load_tags(
+    conn: &Connection,
+    ids: &[i64],
+) -> Result<std::collections::HashMap<i64, Vec<String>>, String> {
+    let mut out: std::collections::HashMap<i64, Vec<String>> = std::collections::HashMap::new();
+    if ids.is_empty() {
+        return Ok(out);
+    }
+    let placeholders = vec!["?"; ids.len()].join(",");
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT memo_id, tag FROM memo_tags WHERE memo_id IN ({placeholders}) \
+             ORDER BY memo_id, tag"
+        ))
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params_from_iter(ids.iter()), |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })
+        .map_err(|e| e.to_string())?;
+    for row in rows {
+        let (id, tag) = row.map_err(|e| e.to_string())?;
+        out.entry(id).or_default().push(tag);
+    }
+    Ok(out)
+}
+
+/// 构建 JSON 结构化导出，返回（内容, 条数）。
+/// 相对 Markdown 多保住精确时间戳、置顶状态与标签数组——所以它才是能回灌的结构化备份。
+pub fn build_export_json(
+    conn: &Connection,
+    filter: &ExportFilter,
+) -> Result<(String, usize), String> {
+    let memos = export_memos(conn, filter)?;
+    let ids: Vec<i64> = memos.iter().map(|m| m.id).collect();
+    let mut tags_by_memo = load_tags(conn, &ids)?;
+    let now: String = conn
+        .query_row("SELECT datetime('now', 'localtime')", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+
+    let items: Vec<ExportMemo> = memos
+        .iter()
+        .map(|m| ExportMemo {
+            id: m.id,
+            content: m.content.clone(),
+            created_at: m.created_at.clone(),
+            updated_at: m.updated_at.clone(),
+            pinned_at: m.pinned_at.clone(),
+            tags: tags_by_memo.remove(&m.id).unwrap_or_default(),
+        })
+        .collect();
+
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Doc<'a> {
+        app: &'a str,
+        version: &'a str,
+        exported_at: &'a str,
+        count: usize,
+        /// 导出时应用的筛选条件（全 null/false = 导出全部）
+        filter: &'a ExportFilter,
+        memos: &'a [ExportMemo],
+    }
+
+    let doc = Doc {
+        app: "FMemos",
+        version: env!("CARGO_PKG_VERSION"),
+        exported_at: &now,
+        count: items.len(),
+        filter,
+        memos: &items,
+    };
+    let json = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
+    Ok((json, items.len()))
+}
+
+/// 取导出文本（浏览器模式用 Blob 下载）：format = "json" 走结构化导出，其余按 Markdown。
 #[tauri::command]
-pub fn export_to(db: State<Db>, path: String) -> Result<usize, String> {
+pub fn export_text(
+    db: State<Db>,
+    format: Option<String>,
+    filter: Option<ExportFilter>,
+) -> Result<String, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
-    let (content, count) = build_export_markdown(&conn)?;
+    let filter = filter.unwrap_or_default();
+    let (content, _) = if format.as_deref() == Some("json") {
+        build_export_json(&conn, &filter)?
+    } else {
+        build_export_markdown(&conn, &filter)?
+    };
+    Ok(content)
+}
+
+/// 导出到系统另存为对话框选定的路径，返回导出条数。
+#[tauri::command]
+pub fn export_to(
+    db: State<Db>,
+    path: String,
+    format: Option<String>,
+    filter: Option<ExportFilter>,
+) -> Result<usize, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let filter = filter.unwrap_or_default();
+    let (content, count) = if format.as_deref() == Some("json") {
+        build_export_json(&conn, &filter)?
+    } else {
+        build_export_markdown(&conn, &filter)?
+    };
     std::fs::write(&path, content).map_err(|e| e.to_string())?;
     Ok(count)
 }
@@ -707,8 +929,20 @@ pub fn import_path(db: State<Db>, path: String, dry_run: bool) -> Result<ImportR
 }
 
 /// 打开自动备份目录。
+/// 读一个设置项；键不存在返回 None。
+#[tauri::command]
+pub fn get_setting(db: State<Db>, key: String) -> Result<Option<String>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    db::read_setting(&conn, &key).map_err(|e| e.to_string())
+}
 
-/// 打开自动备份目录。
+/// 写一个设置项；值为空串等同删除该项。
+#[tauri::command]
+pub fn set_setting(db: State<Db>, key: String, value: String) -> Result<(), String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    db::write_setting(&conn, &key, &value).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn open_backup_dir(app: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
@@ -737,6 +971,13 @@ pub fn update_memo(db: State<Db>, id: i64, content: String) -> Result<Memo, Stri
 pub fn delete_memo(db: State<Db>, id: i64) -> Result<(), String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     delete_memo_impl(&conn, id)
+}
+
+/// 置顶 / 取消置顶
+#[tauri::command]
+pub fn set_pin(db: State<Db>, id: i64, pinned: bool) -> Result<Memo, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    set_pin_impl(&conn, id, pinned)
 }
 
 #[tauri::command]
@@ -883,14 +1124,14 @@ mod tests {
                 .iter()
                 .all(|m| m.id != m1.id)
         );
-        let trash = list_memos_page(&conn, None, None, false, None, true, None, None).unwrap();
+        let trash = list_memos_page(&conn, None, None, false, None, true, None, None, None).unwrap();
         assert_eq!(trash.len(), 1);
         assert_eq!(trash[0].id, m1.id);
 
         // 恢复
         restore_memo_impl(&conn, m1.id).unwrap();
         assert_eq!(list_memos_impl(&conn, None, None, false, None).unwrap().len(), 2);
-        assert!(list_memos_page(&conn, None, None, false, None, true, None, None)
+        assert!(list_memos_page(&conn, None, None, false, None, true, None, None, None)
             .unwrap()
             .is_empty());
 
@@ -898,7 +1139,7 @@ mod tests {
         delete_memo_impl(&conn, m2.id).unwrap();
         purge_memo_impl(&conn, m2.id).unwrap();
         assert_eq!(list_memos_impl(&conn, None, None, false, None).unwrap().len(), 1);
-        assert!(list_memos_page(&conn, None, None, false, None, true, None, None)
+        assert!(list_memos_page(&conn, None, None, false, None, true, None, None, None)
             .unwrap()
             .is_empty());
         // FTS 里也查不到了
@@ -907,7 +1148,7 @@ mod tests {
             .is_empty());
 
         // 导出只含未删除内容（此时仅剩 one）
-        let (content, count) = build_export_markdown(&conn).unwrap();
+        let (content, count) = build_export_markdown(&conn, &Default::default()).unwrap();
         assert_eq!(count, 1);
         assert!(content.contains("one") && !content.contains("two"));
 
@@ -915,7 +1156,7 @@ mod tests {
         delete_memo_impl(&conn, m1.id).unwrap();
         let n = empty_trash_impl(&conn).unwrap();
         assert_eq!(n, 1);
-        assert!(list_memos_page(&conn, None, None, false, None, true, None, None)
+        assert!(list_memos_page(&conn, None, None, false, None, true, None, None, None)
             .unwrap()
             .is_empty());
     }
@@ -963,7 +1204,7 @@ mod tests {
             .collect();
         assert_eq!(all.len(), 5);
 
-        let page1 = list_memos_page(&conn, None, None, false, None, false, Some(2), None).unwrap();
+        let page1 = list_memos_page(&conn, None, None, false, None, false, None, Some(2), None).unwrap();
         assert_eq!(page1.len(), 2);
         // 同秒创建的记录 created_at 相同，游标靠 (created_at, id) 复合键不重不漏
         let last1 = page1.last().unwrap();
@@ -974,6 +1215,7 @@ mod tests {
             false,
             None,
             false,
+            None,
             Some(2),
             Some((last1.created_at.clone(), last1.id)),
         )
@@ -990,6 +1232,7 @@ mod tests {
             false,
             None,
             false,
+            None,
             Some(2),
             Some((last2.created_at.clone(), last2.id)),
         )
@@ -1256,6 +1499,141 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn pin_filter_three_states() {
+        let conn = setup();
+        let a = create_memo_impl(&conn, "a").unwrap();
+        create_memo_impl(&conn, "b").unwrap();
+        create_memo_impl(&conn, "c").unwrap();
+        let pinned = set_pin_impl(&conn, a.id, true).unwrap();
+        assert!(pinned.pinned_at.is_some());
+
+        // None = 不筛（导出走这条路，置顶项不能漏）
+        let all = list_memos_page(&conn, None, None, false, None, false, None, None, None).unwrap();
+        assert_eq!(all.len(), 3);
+        // Some(false) = 卡片流主列表，排除置顶项
+        let plain =
+            list_memos_page(&conn, None, None, false, None, false, Some(false), None, None).unwrap();
+        assert_eq!(plain.len(), 2);
+        assert!(plain.iter().all(|m| m.pinned_at.is_none()));
+        // Some(true) = 置顶区
+        let pins =
+            list_memos_page(&conn, None, None, false, None, false, Some(true), None, None).unwrap();
+        assert_eq!(pins.len(), 1);
+        assert_eq!(pins[0].id, a.id);
+
+        // 取消置顶后回到普通列表
+        assert!(set_pin_impl(&conn, a.id, false).unwrap().pinned_at.is_none());
+        let plain =
+            list_memos_page(&conn, None, None, false, None, false, Some(false), None, None).unwrap();
+        assert_eq!(plain.len(), 3);
+    }
+
+    #[test]
+    fn pin_survives_content_update_and_reorders() {
+        let conn = setup();
+        let a = create_memo_impl(&conn, "a").unwrap();
+        let b = create_memo_impl(&conn, "b").unwrap();
+
+        // 改正文不应清掉置顶（UPDATE 只动 content / updated_at）
+        set_pin_impl(&conn, a.id, true).unwrap();
+        assert!(update_memo_impl(&conn, a.id, "a 改过了").unwrap().pinned_at.is_some());
+
+        // 最近置顶的排在前面
+        set_pin_impl(&conn, b.id, true).unwrap();
+        let pins =
+            list_memos_page(&conn, None, None, false, None, false, Some(true), None, None).unwrap();
+        assert_eq!(pins.iter().map(|m| m.id).collect::<Vec<_>>(), vec![b.id, a.id]);
+
+        // 置顶一条不存在的笔记要报错，而不是静默成功
+        assert!(set_pin_impl(&conn, 9999, true).is_err());
+    }
+
+    #[test]
+    fn export_scopes_by_filter_and_json_keeps_pin_and_tags() {
+        let conn = setup();
+        let a = create_memo_impl(&conn, "#工作 周报").unwrap();
+        create_memo_impl(&conn, "#生活 买菜").unwrap();
+        set_pin_impl(&conn, a.id, true).unwrap();
+
+        let all = ExportFilter::default();
+        let (md, n) = build_export_markdown(&conn, &all).unwrap();
+        assert_eq!(n, 2);
+        // 置顶项也必须出现在导出里（回归保护：主列表排除置顶，导出不能跟着排）
+        assert!(md.contains("周报") && md.contains("买菜"));
+
+        // 按标签筛选导出，并在抬头写明筛的是什么
+        let only_work = ExportFilter {
+            tag: Some("工作".into()),
+            ..Default::default()
+        };
+        let (md, n) = build_export_markdown(&conn, &only_work).unwrap();
+        assert_eq!(n, 1);
+        assert!(md.contains("周报") && !md.contains("买菜"));
+        assert!(md.contains("筛选：#工作"));
+
+        // JSON：保住置顶状态、标签数组与完整时间戳
+        let (json, n) = build_export_json(&conn, &all).unwrap();
+        assert_eq!(n, 2);
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["count"], 2);
+        let items = v["memos"].as_array().unwrap();
+        let work = items
+            .iter()
+            .find(|m| m["content"].as_str().unwrap().contains("周报"))
+            .unwrap();
+        assert!(work["pinnedAt"].is_string());
+        assert_eq!(work["tags"][0], "工作");
+        assert_eq!(work["createdAt"].as_str().unwrap().len(), 19);
+    }
+
+    #[test]
+    fn settings_roundtrip_and_delete_on_empty() {
+        let conn = setup();
+        assert!(db::read_setting(&conn, "md_export_dir").unwrap().is_none());
+
+        db::write_setting(&conn, "md_export_dir", "D:/sync").unwrap();
+        assert_eq!(
+            db::read_setting(&conn, "md_export_dir").unwrap().as_deref(),
+            Some("D:/sync")
+        );
+        // 覆盖写
+        db::write_setting(&conn, "md_export_dir", "D:/other").unwrap();
+        assert_eq!(
+            db::read_setting(&conn, "md_export_dir").unwrap().as_deref(),
+            Some("D:/other")
+        );
+        // 空串等同删除该项
+        db::write_setting(&conn, "md_export_dir", "").unwrap();
+        assert!(db::read_setting(&conn, "md_export_dir").unwrap().is_none());
+    }
+
+    #[test]
+    fn daily_markdown_export_writes_once_per_day() {
+        let conn = setup();
+        create_memo_impl(&conn, "每日导出内容").unwrap();
+        let dir = tests_support::temp_dir("md-export");
+        db::write_setting(&conn, "md_export_dir", dir.to_str().unwrap()).unwrap();
+
+        db::auto_export_markdown(&conn);
+        let day: String = conn
+            .query_row("SELECT strftime('%Y%m%d','now','localtime')", [], |r| r.get(0))
+            .unwrap();
+        let file = dir.join(format!("fmemos-{day}.md"));
+        assert!(file.exists());
+        assert!(std::fs::read_to_string(&file).unwrap().contains("每日导出内容"));
+
+        // 同一天再跑不会覆盖已有文件
+        std::fs::write(&file, "已存在就不覆盖").unwrap();
+        db::auto_export_markdown(&conn);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "已存在就不覆盖");
+
+        // 目录不存在时静默跳过（换盘 / 被删），不 panic
+        db::write_setting(&conn, "md_export_dir", "D:/不存在的目录-xyz").unwrap();
+        db::auto_export_markdown(&conn);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 /// 测试共用的临时目录工具（import / 备份等测试用）。目录名进程内唯一，避免并行测试互相踩。

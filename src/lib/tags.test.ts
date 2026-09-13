@@ -14,6 +14,7 @@ const memo = (id: number, content: string): Memo => ({
   content,
   createdAt: "2026-01-01 00:00:00",
   updatedAt: "2026-01-01 00:00:00",
+  pinnedAt: null,
 });
 
 describe("buildTagTree", () => {

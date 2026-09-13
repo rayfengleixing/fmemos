@@ -8,6 +8,7 @@ const memo = (id: number, content: string, createdAt = "2026-01-01 09:00:00"): M
   content,
   createdAt,
   updatedAt: createdAt,
+  pinnedAt: null,
 });
 
 describe("collectTodos", () => {

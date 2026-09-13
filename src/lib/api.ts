@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { BackupInfo, ImportReport, Memo } from "./types";
+import type { BackupInfo, ExportFormat, ImportReport, Memo, MemoFilter } from "./types";
 
 export async function listMemos(
   opts: {
@@ -9,6 +9,11 @@ export async function listMemos(
     date?: string | null;
     /** true 时只列出回收站中的 memo */
     trash?: boolean;
+    /**
+     * 置顶过滤：null / undefined = 不筛；true = 只要置顶（置顶区）；false = 只要未置顶（卡片流主列表）。
+     * 置顶项不参与分页——主列表传 false 把它们排除，置顶区单独查，两边不会重复。
+     */
+    pinned?: boolean | null;
     /** 分页大小；不传返回全部 */
     limit?: number | null;
     /** 游标：取 (createdAt, id) 排序在该条之后的下一页 */
@@ -21,6 +26,7 @@ export async function listMemos(
     untagged: opts.untagged ?? false,
     date: opts.date ?? null,
     trash: opts.trash ?? false,
+    pinned: opts.pinned ?? null,
     limit: opts.limit ?? null,
     beforeCreatedAt: opts.before?.createdAt ?? null,
     beforeId: opts.before?.id ?? null,
@@ -38,6 +44,11 @@ export function updateMemo(id: number, content: string): Promise<Memo> {
 /** 删除 = 移入回收站（可 restoreMemo 撤销） */
 export function deleteMemo(id: number): Promise<void> {
   return invoke<void>("delete_memo", { id });
+}
+
+/** 置顶 / 取消置顶，返回更新后的 memo（可直接替换列表里的那一条） */
+export function setPin(id: number, pinned: boolean): Promise<Memo> {
+  return invoke<Memo>("set_pin", { id, pinned });
 }
 
 export function restoreMemo(id: number): Promise<void> {
@@ -91,39 +102,59 @@ export function importPath(path: string, dryRun: boolean): Promise<ImportReport>
 }
 
 /**
- * 导出全部笔记为 Markdown。
+ * 导出笔记。
  * Tauri 环境：系统另存为对话框选位置，由后端写文件；
  * 浏览器调试模式：对话框插件不可用，自动退回 Blob 下载。
+ * filter 传当前筛选条件就是「只导出这一批」，传 null 表示导出全部。
  */
-export async function exportMemos(): Promise<ExportResult> {
+export async function exportMemos(
+  format: ExportFormat = "md",
+  filter: MemoFilter | null = null,
+): Promise<ExportResult> {
   const date = new Date();
   const stamp = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}${String(
     date.getDate(),
   ).padStart(2, "0")}`;
+  const json = format === "json";
+  const ext = json ? "json" : "md";
 
   if ("__TAURI_INTERNALS__" in window) {
     try {
       const { save } = await import("@tauri-apps/plugin-dialog");
       const path = await save({
-        title: "导出为 Markdown",
-        defaultPath: `FMemos-导出-${stamp}.md`,
-        filters: [{ name: "Markdown", extensions: ["md"] }],
+        title: json ? "导出为 JSON" : "导出为 Markdown",
+        defaultPath: `FMemos-导出-${stamp}.${ext}`,
+        filters: [
+          json ? { name: "JSON", extensions: ["json"] } : { name: "Markdown", extensions: ["md"] },
+        ],
       });
       if (!path) return "cancel";
-      await invoke<number>("export_to", { path });
+      await invoke<number>("export_to", { path, format, filter });
       return "file";
     } catch {
       // 对话框不可用（如浏览器 mock），退回下载
     }
   }
 
-  const content = await invoke<string>("export_markdown");
-  const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
+  const content = await invoke<string>("export_text", { format, filter });
+  const blob = new Blob([content], {
+    type: json ? "application/json;charset=utf-8" : "text/markdown;charset=utf-8",
+  });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `FMemos-导出-${stamp}.md`;
+  a.download = `FMemos-导出-${stamp}.${ext}`;
   a.click();
   URL.revokeObjectURL(url);
   return "download";
+}
+
+/** 读一个设置项；键不存在返回 null */
+export function getSetting(key: string): Promise<string | null> {
+  return invoke<string | null>("get_setting", { key });
+}
+
+/** 写一个设置项；值为空串等同删除该项 */
+export function setSetting(key: string, value: string): Promise<void> {
+  return invoke<void>("set_setting", { key, value });
 }

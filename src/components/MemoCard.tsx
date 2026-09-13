@@ -19,6 +19,8 @@ interface Props {
   onTagClick: (tag: string) => void;
   onUpdate: (id: number, content: string) => Promise<void>;
   onDelete: (id: number) => Promise<void>;
+  /** 置顶 / 取消置顶；pinned 为目标状态 */
+  onTogglePin: (id: number, pinned: boolean) => void;
 }
 
 function MemoCard({
@@ -33,6 +35,7 @@ function MemoCard({
   onTagClick,
   onUpdate,
   onDelete,
+  onTogglePin,
 }: Props) {
   const [draft, setDraft] = useState(memo.content);
   const [overflowing, setOverflowing] = useState(false); // 内容是否超过两行
@@ -85,7 +88,7 @@ function MemoCard({
   );
 
   return (
-    <div className="memo-card" data-memo-id={memo.id}>
+    <div className={"memo-card" + (memo.pinnedAt ? " pinned" : "")} data-memo-id={memo.id}>
       {!editing && overflowing && (
         <button
           className="memo-expand"
@@ -144,6 +147,9 @@ function MemoCard({
                 </>
               ) : (
                 <>
+                  <button onClick={() => onTogglePin(memo.id, memo.pinnedAt === null)}>
+                    {memo.pinnedAt ? "取消置顶" : "置顶"}
+                  </button>
                   <button onClick={() => onSetEditing(memo.id)}>编辑</button>
                   <button
                     className="danger"

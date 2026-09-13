@@ -4,6 +4,26 @@ export interface Memo {
   /** "YYYY-MM-DD HH:MM:SS" 本地时间，来自 SQLite */
   createdAt: string;
   updatedAt: string;
+  /** 置顶时间；null = 未置顶 */
+  pinnedAt: string | null;
+}
+
+/** 筛选条件：全空表示不筛（导出全部 / 当前视图无筛选） */
+export interface MemoFilter {
+  tag: string | null;
+  query: string | null;
+  untagged: boolean;
+  date: string | null;
+}
+
+/** 导出格式：Markdown 便于阅读，JSON 保住时间戳与标签，可回灌 */
+export type ExportFormat = "md" | "json";
+
+/** 侧栏保存的智能列表：一个名字 + 一组筛选条件 */
+export interface SavedFilter {
+  id: string;
+  name: string;
+  filter: MemoFilter;
 }
 
 /** 标签树节点：path 是从根到本级的完整路径（如 "读书/心理学"），count 含所有子孙 */
@@ -41,3 +61,4 @@ export interface ImportReport {
   /** 前几条正文摘要，供确认前预览 */
   samples: string[];
 }
+

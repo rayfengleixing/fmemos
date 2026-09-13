@@ -716,6 +716,42 @@ nav .side-section:first-child {
   font-weight: 400;
 }
 
+/* 置顶分组头：用主色与日期分组区分 */
+.pinned-header {
+  color: var(--primary-text);
+}
+
+/* 置顶卡片：左侧一道主色竖条，扫一眼能认出来（padding 同步减 3px 保持文字对齐） */
+.memo-card.pinned {
+  border-left: 3px solid var(--primary);
+  padding-left: 13px;
+}
+
+/* ---------- 智能列表（侧栏） ---------- */
+.side-add {
+  color: var(--text-secondary);
+  font-size: 12.5px;
+}
+
+.side-add:hover {
+  color: var(--primary-text);
+}
+
+/* ---------- 设置页：复选行 ---------- */
+.settings-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.settings-check input {
+  cursor: pointer;
+}
+
 /* ---------- 热力图 ---------- */
 .hm-grid {
   display: grid;

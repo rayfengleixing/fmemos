@@ -12,12 +12,33 @@ import * as api from "./lib/api";
 import { dateHeaderLabel, toDateKey } from "./lib/format";
 import { buildTagTree, countMemosWithTag, extractTags, tagMatchesPrefix } from "./lib/tags";
 import { collectTodos, todoStats } from "./lib/todo";
-import type { Memo, TagNode, ThemeMode } from "./lib/types";
+import type { Memo, MemoFilter, SavedFilter, TagNode, ThemeMode } from "./lib/types";
 
 /** 卡片流分页大小：滚动到底部附近自动加载下一页 */
 const PAGE_SIZE = 50;
 
 const THEME_KEY = "fmemos.theme";
+/** 侧栏智能列表的持久化键 */
+const SAVED_FILTERS_KEY = "fmemos.savedFilters";
+
+/** 读侧栏保存的智能列表；解析失败按空处理，不让坏数据卡住启动 */
+function loadSavedFilters(): SavedFilter[] {
+  try {
+    const raw = localStorage.getItem(SAVED_FILTERS_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (x): x is SavedFilter =>
+        !!x &&
+        typeof x === "object" &&
+        typeof (x as SavedFilter).id === "string" &&
+        typeof (x as SavedFilter).name === "string",
+    );
+  } catch {
+    return [];
+  }
+}
 
 interface ToastState {
   text: string;
@@ -67,6 +88,10 @@ export default function App() {
   const [todoView, setTodoView] = useState(false);
   /** 从待办清单点「原文」后要滚动定位到的卡片 id */
   const [focusMemoId, setFocusMemoId] = useState<number | null>(null);
+  /** 置顶区：独立于分页（后端按 pinned=true 单独查），跟随当前筛选 */
+  const [pinnedMemos, setPinnedMemos] = useState<Memo[]>([]);
+  /** 侧栏保存的智能列表（localStorage 持久化） */
+  const [savedFilters, setSavedFilters] = useState<SavedFilter[]>(() => loadSavedFilters());
   const [toast, setToast] = useState<ToastState | null>(null);
   const toastTimer = useRef<number | undefined>(undefined);
 
@@ -145,6 +170,8 @@ export default function App() {
         untagged: f.untagged,
         date: f.date,
         trash: f.trash,
+        // 置顶项由置顶区单独展示，主列表排除它们，避免两处重复
+        pinned: false,
         limit: PAGE_SIZE,
       });
       if (epoch !== filterEpoch.current) return;
@@ -174,6 +201,7 @@ export default function App() {
         untagged: f.untagged,
         date: f.date,
         trash: f.trash,
+        pinned: false,
         limit: PAGE_SIZE,
         before: { createdAt: last.createdAt, id: last.id },
       });
@@ -200,9 +228,28 @@ export default function App() {
     }
   }, []);
 
+  // 置顶区：跟随当前筛选（搜「周报」时只显示命中的置顶项），不分页
+  const fetchPinned = useCallback(async () => {
+    try {
+      const f = filtersRef.current;
+      setPinnedMemos(
+        await api.listMemos({
+          tag: f.tag,
+          query: f.query.trim() || null,
+          untagged: f.untagged,
+          date: f.date,
+          trash: f.trash,
+          pinned: true,
+        }),
+      );
+    } catch {
+      // 置顶区拉取失败不打扰主流程
+    }
+  }, []);
+
   const refresh = useCallback(
-    () => Promise.all([fetchAll(), fetchFiltered(), fetchTrash()]),
-    [fetchAll, fetchFiltered, fetchTrash],
+    () => Promise.all([fetchAll(), fetchFiltered(), fetchTrash(), fetchPinned()]),
+    [fetchAll, fetchFiltered, fetchTrash, fetchPinned],
   );
 
   useEffect(() => {
@@ -219,7 +266,8 @@ export default function App() {
       trash: trashView,
     };
     void fetchFiltered();
-  }, [activeTag, debouncedQuery, untagged, activeDate, trashView, fetchFiltered]);
+    void fetchPinned();
+  }, [activeTag, debouncedQuery, untagged, activeDate, trashView, fetchFiltered, fetchPinned]);
 
   // 全局快捷键 Ctrl+Shift+M 呼出窗口时，后端发 quick-open，前端聚焦输入框
   useEffect(() => {
@@ -359,6 +407,78 @@ export default function App() {
       showToast(`已从 ${n} 条笔记里移除 #${tag}`);
     },
     [refresh, showToast],
+  );
+
+  // 置顶 / 取消置顶：置顶区要整块重排，所以走 refresh 而不是局部替换
+  const handleTogglePin = useCallback(
+    (id: number, pinned: boolean) => {
+      api
+        .setPin(id, pinned)
+        .then(() => refresh())
+        .then(() => showToast(pinned ? "已置顶" : "已取消置顶"))
+        .catch((e) => setError(`置顶失败：${e}`));
+    },
+    [refresh, showToast],
+  );
+
+  // 智能列表：把当前筛选存成一个命名条目，下次一键切回
+  const currentFilter: MemoFilter = useMemo(
+    () => ({ tag: activeTag, query: query.trim() || null, untagged, date: activeDate }),
+    [activeTag, query, untagged, activeDate],
+  );
+  const filterIsEmpty =
+    currentFilter.tag === null &&
+    currentFilter.query === null &&
+    !currentFilter.untagged &&
+    currentFilter.date === null;
+
+  /** 当前筛选的可读描述，给设置页「只导出当前筛选」显示 */
+  const filterLabel = useMemo(() => {
+    const parts: string[] = [];
+    if (activeTag) parts.push(`#${activeTag}`);
+    if (query.trim()) parts.push(`搜索「${query.trim()}」`);
+    if (activeDate) parts.push(activeDate);
+    if (untagged) parts.push("无标签");
+    return parts.join(" · ");
+  }, [activeTag, query, activeDate, untagged]);
+
+  const persistSavedFilters = useCallback((next: SavedFilter[]) => {
+    setSavedFilters(next);
+    try {
+      localStorage.setItem(SAVED_FILTERS_KEY, JSON.stringify(next));
+    } catch {
+      // localStorage 不可用时只在内存里生效
+    }
+  }, []);
+
+  const saveCurrentFilter = useCallback(() => {
+    if (filterIsEmpty) {
+      showToast("当前没有筛选条件，先点个标签或搜索一下");
+      return;
+    }
+    const name = prompt("给这个筛选起个名字（如「本周工作」）");
+    if (!name?.trim()) return;
+    persistSavedFilters([
+      ...savedFilters,
+      { id: String(Date.now()), name: name.trim(), filter: currentFilter },
+    ]);
+    showToast(`已保存到智能列表：${name.trim()}`);
+  }, [filterIsEmpty, savedFilters, currentFilter, persistSavedFilters, showToast]);
+
+  const applySavedFilter = useCallback((f: SavedFilter) => {
+    setActiveTag(f.filter.tag);
+    setQuery(f.filter.query ?? "");
+    setUntagged(f.filter.untagged);
+    setActiveDate(f.filter.date);
+    setTrashView(false);
+    setTodoView(false);
+  }, []);
+
+  const deleteSavedFilter = useCallback(
+    (id: string) => {
+      persistSavedFilters(savedFilters.filter((f) => f.id !== id));
+    },
+    [savedFilters, persistSavedFilters],
   );
 
   // 从备份恢复 / 批量导入后：数据整体换了，先回到「全部笔记」再刷新
@@ -544,6 +664,25 @@ export default function App() {
     return out;
   }, [memos]);
 
+  // 置顶区与日期分组共用同一套卡片渲染，避免两处 props 漂移
+  const renderCard = (memo: Memo) => (
+    <MemoCard
+      key={memo.id}
+      memo={memo}
+      allTags={allTags}
+      highlight={searchTerms}
+      editing={editingId === memo.id}
+      onSetEditing={setEditingId}
+      trash={trashView}
+      onRestore={handleRestore}
+      onPurge={handlePurge}
+      onTagClick={selectTag}
+      onUpdate={handleUpdate}
+      onDelete={handleDelete}
+      onTogglePin={handleTogglePin}
+    />
+  );
+
   return (
     <div className="app">
       <Sidebar
@@ -567,6 +706,11 @@ export default function App() {
         todoTotal={todoStat.total}
         todoActive={todoView}
         onOpenTodo={openTodo}
+        savedFilters={savedFilters}
+        canSaveFilter={!filterIsEmpty}
+        onApplySavedFilter={applySavedFilter}
+        onSaveCurrentFilter={saveCurrentFilter}
+        onDeleteSavedFilter={deleteSavedFilter}
         onOpenSettings={() => setSettingsOpen(true)}
         onManageTag={setManageTag}
       />
@@ -601,6 +745,17 @@ export default function App() {
             <Editor onCreate={handleCreate} focusSignal={focusSignal} allTags={allTags} />
           )}
 
+          {/* 置顶区：独立于分页，置于日期分组之上；与下方分组共用 renderCard */}
+          {!trashView && !todoView && pinnedMemos.length > 0 && (
+            <>
+              <div className="date-header pinned-header">
+                <span>置顶</span>
+                <span className="date-count">{pinnedMemos.length} 条</span>
+              </div>
+              {pinnedMemos.map(renderCard)}
+            </>
+          )}
+
           {todoView ? (
             <TodoView
               memos={allMemos}
@@ -609,7 +764,7 @@ export default function App() {
               onTagClick={selectTag}
               onOpenMemo={openMemo}
             />
-          ) : memos.length === 0 ? (
+          ) : memos.length === 0 && pinnedMemos.length === 0 ? (
             <div className="empty-state">
               {trashView ? (
                 "回收站是空的"
@@ -630,22 +785,7 @@ export default function App() {
                   <span>{group.label}</span>
                   <span className="date-count">{group.memos.length} 条</span>
                 </div>
-                {group.memos.map((memo) => (
-                  <MemoCard
-                    key={memo.id}
-                    memo={memo}
-                    allTags={allTags}
-                    highlight={searchTerms}
-                    editing={editingId === memo.id}
-                    onSetEditing={setEditingId}
-                    trash={trashView}
-                    onRestore={handleRestore}
-                    onPurge={handlePurge}
-                    onTagClick={selectTag}
-                    onUpdate={handleUpdate}
-                    onDelete={handleDelete}
-                  />
-                ))}
+                {group.memos.map(renderCard)}
               </Fragment>
             ))
           )}
@@ -673,6 +813,8 @@ export default function App() {
         <SettingsModal
           theme={theme}
           onThemeChange={setTheme}
+          currentFilter={currentFilter}
+          filterLabel={filterLabel}
           notify={showToast}
           onDataReloaded={handleDataReloaded}
           onClose={() => setSettingsOpen(false)}
