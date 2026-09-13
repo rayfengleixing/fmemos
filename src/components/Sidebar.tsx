@@ -23,6 +23,8 @@ interface Props {
   trashActive: boolean;
   onOpenTrash: () => void;
   onOpenSettings: () => void;
+  /** 打开某个标签的管理面板（重命名 / 合并 / 删除） */
+  onManageTag: (tag: string) => void;
 }
 
 function Sidebar({
@@ -43,6 +45,7 @@ function Sidebar({
   trashActive,
   onOpenTrash,
   onOpenSettings,
+  onManageTag,
 }: Props) {
   // 记录被展开的节点路径；默认全部收起，点开的层级在新笔记进来后保持展开
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -110,6 +113,7 @@ function Sidebar({
           expanded={expanded}
           onToggle={toggle}
           onSelectTag={onSelectTag}
+          onManageTag={onManageTag}
         />
         {tags.length === 0 && (
           <div className="side-empty">
@@ -135,12 +139,14 @@ function TagTree({
   expanded,
   onToggle,
   onSelectTag,
+  onManageTag,
 }: {
   nodes: TagNode[];
   activeTag: string | null;
   expanded: Set<string>;
   onToggle: (path: string) => void;
   onSelectTag: (tag: string) => void;
+  onManageTag: (tag: string) => void;
 }) {
   return (
     <>
@@ -174,6 +180,18 @@ function TagTree({
               <span className="tag-hash">#</span>
               {node.name}
               <span className="side-count">{node.count}</span>
+              {/* 用 span 而非 button：外层已经是按钮，嵌套 button 是非法结构 */}
+              <span
+                className="tag-more"
+                role="button"
+                title="重命名 / 合并 / 删除"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onManageTag(node.path);
+                }}
+              >
+                ⋯
+              </span>
             </button>
             {hasChildren && isExpanded && (
               <div className="tag-branch">
@@ -183,6 +201,7 @@ function TagTree({
                   expanded={expanded}
                   onToggle={onToggle}
                   onSelectTag={onSelectTag}
+                  onManageTag={onManageTag}
                 />
               </div>
             )}

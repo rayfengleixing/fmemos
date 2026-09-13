@@ -1,4 +1,4 @@
-import { extractTags } from "./tags";
+import { extractTags, removeTagInContent, renameTagInContent } from "./tags";
 import type { Memo } from "./types";
 
 /**
@@ -148,6 +148,53 @@ export function installBrowserMock(): void {
           for (const m of active) lines.push(`## ${m.createdAt}`, "", m.content, "", "---", "");
           return Promise.resolve(lines.join("\n"));
         }
+        case "rename_tag": {
+          const from = String(args.from).trim();
+          const to = String(args.to).trim();
+          if (!from || !to) return Promise.reject("标签名不能为空");
+          if (from === to) return Promise.reject("新标签名和原标签一样");
+          let n = 0;
+          for (const m of memos) {
+            const next = renameTagInContent(m.content, from, to);
+            if (next === null) continue;
+            m.content = next;
+            m.updatedAt = nowStamp();
+            n += 1;
+          }
+          return Promise.resolve(n);
+        }
+        case "delete_tag": {
+          const tag = String(args.tag).trim();
+          if (!tag) return Promise.reject("标签名不能为空");
+          let n = 0;
+          for (const m of memos) {
+            const next = removeTagInContent(m.content, tag)?.trim();
+            // 与后端一致：删完正文会变空的那条跳过
+            if (!next) continue;
+            m.content = next;
+            m.updatedAt = nowStamp();
+            n += 1;
+          }
+          return Promise.resolve(n);
+        }
+        // 浏览器模式没有真实备份目录，给两条假数据供 UI 调试
+        case "list_backups":
+          return Promise.resolve([
+            {
+              name: "fmemos-backup-20260913.db",
+              path: "(mock) fmemos-backup-20260913.db",
+              date: stamp(0, "00:00:00").slice(0, 10),
+              sizeBytes: 131072,
+            },
+            {
+              name: "fmemos-backup-20260912.db",
+              path: "(mock) fmemos-backup-20260912.db",
+              date: stamp(1, "00:00:00").slice(0, 10),
+              sizeBytes: 126976,
+            },
+          ]);
+        case "restore_backup":
+          return Promise.resolve(memos.length);
         // 事件系统只需返回 id，浏览器里 quick-open 永远不会触发
         case "plugin:event|listen":
           return Promise.resolve(++nextId);

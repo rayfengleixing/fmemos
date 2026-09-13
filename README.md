@@ -2,7 +2,7 @@
 
 flomo 风格的本地卡片笔记：**Tauri 2 + React 19 + SQLite**，数据完全存在本地，无账号、无网络依赖。
 
-![版本](https://img.shields.io/badge/版本-0.3.1-3eb477)
+![版本](https://img.shields.io/badge/版本-0.5.0-3eb477)
 
 ## 功能
 
@@ -24,6 +24,7 @@ flomo 风格的本地卡片笔记：**Tauri 2 + React 19 + SQLite**，数据完�
 - 侧栏层级树展示与计数；点击标签筛选，父标签连带子孙（`#读书` 命中 `#读书/心理学`，且不误命中 `#读书笔记`）
 - 输入框与卡片编辑框输入 `#` 自动补全已有标签（`↑`/`↓` 选择、`Enter`/`Tab` 确认、`Esc` 关闭）
 - 「无标签」一键筛出没有打标签的笔记
+- 标签管理：侧栏标签行 hover 出现 ⋯，可**重命名**（连带子标签：`#读书` → `#阅读` 会把 `#读书/心理学` 改成 `#阅读/心理学`）、**合并到已有标签**、**删除**（含子标签）；操作前显示会改写多少条笔记，重命名/合并后当前筛选自动跟随到新标签
 
 **搜索**
 
@@ -49,6 +50,7 @@ flomo 风格的本地卡片笔记：**Tauri 2 + React 19 + SQLite**，数据完�
 **数据安全**
 
 - 自动备份：每天首次启动自动把完整数据库快照到程序旁 `backup/`，保留最近 5 份（SQLite 在线备份，WAL 下也是一致快照）
+- 从备份恢复：设置 → 「从备份恢复」列出全部备份，选中即可回滚；恢复前自动把当前数据另存为安全副本（`before-restore-*`，保留最近 3 份），且走在线备份 API 反向写回，**不用退出应用**、立即生效
 - 数据导出：设置 → 导出为 Markdown（系统另存为对话框选位置，含创建时间，标签随正文保留）
 
 ## 快捷键
@@ -67,7 +69,7 @@ flomo 风格的本地卡片笔记：**Tauri 2 + React 19 + SQLite**，数据完�
 - **便携模式**：单文件 SQLite（`fmemos.db` + WAL 文件）与 exe 同目录，跟着程序走
   - 开发模式：`src-tauri/target/debug/fmemos.db`
   - 打包后：exe 所在目录（建议放非系统目录；装进 Program Files 会因权限不足无法写入）
-- 备份：关闭应用后复制 `fmemos.db` 即可
+- 备份：关闭应用后复制 `fmemos.db` 即可；备份文件夹里的 `fmemos-backup-YYYYMMDD.db` 可直接在设置里一键恢复
 - 同步盘（Syncthing / 坚果云等）：WAL 文件不适合直接同步，建议在应用关闭状态下同步，或只同步定期备份出的副本
 - 派生数据（全文索引、标签关联）按数据版本（`PRAGMA user_version`）在启动时按需重建，版本不变不重建
 
@@ -94,17 +96,17 @@ npm test      # 在工作区根目录执行：Markdown 分块 / TODO / 标签树
 
 ```
 src/
-  components/   # Editor、MemoCard、Sidebar、Heatmap、ReviewModal、TagInput(+Textarea)
+  components/   # Editor、MemoCard、Sidebar、Heatmap、ReviewModal、TagManageModal、TagInput(+Textarea)
   lib/
     api.ts        # invoke 封装（含分页参数）
     md.tsx        # 手写 Markdown 渲染（分块解析 + TODO/链接/加粗），纯函数可测
-    tags.ts       # 标签解析与标签树构建（与后端语义一致）
+    tags.ts       # 标签解析、标签树构建、标签改写（与后端语义一致）
     format.ts     # 时间显示
     tauri-mock.ts # 浏览器调试用假后端
 src-tauri/src/
-  commands.rs   # Tauri 命令与业务实现（增删改查、分页、测试）
-  db.rs         # 连接初始化、建表迁移、派生数据版本门控重建
-  tags.rs       # 后端标签提取（与前端 tags.ts 保持一致）
+  commands.rs   # Tauri 命令与业务实现（增删改查、分页、标签治理、备份恢复、测试）
+  db.rs         # 连接初始化、建表迁移、派生数据版本门控重建、恢复后收尾
+  tags.rs       # 后端标签提取与改写（与前端 tags.ts 保持一致）
   lib.rs        # 应用入口、全局快捷键
 ```
 
@@ -125,6 +127,8 @@ npm run tauri build   # 在 fmemos 目录执行
 - 分页：keyset 分页，游标为 `(created_at, id)` 复合键，同秒创建不重不漏
 - 渲染性能：App 回调全部 `useCallback` 稳定化，Sidebar / MemoCard / Editor 包 `React.memo`，Markdown 渲染按内容记忆化
 - 写安全：增删改均包事务；两字以内 LIKE 搜索对 `%` `_` `\` 转义；Tauri CSP 收紧为 `default-src 'self'`
+- 标签治理：改写正文的扫描器与 `extract_tags` 共用同一套边界判定（`for_each_tag`），所以重命名 `读书` 不会误伤 `#读书笔记`，且 `from` 与 `to` 互为上下级时直接拒绝（防自嵌套）
+- 备份恢复：用 `Backup::run_to_completion` 反向把备份写回**当前连接**——Windows 下数据库文件被本进程占用，直接覆盖文件做不到；恢复后切回 WAL 并强制重建派生数据
 
 ## 后续路线
 

@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { buildTagTree, extractTags } from "./tags";
+import {
+  buildTagTree,
+  countMemosWithTag,
+  extractTags,
+  removeTagInContent,
+  renameTagInContent,
+  tagMatchesPrefix,
+} from "./tags";
 import type { Memo } from "./types";
 
 const memo = (id: number, content: string): Memo => ({
@@ -58,5 +65,43 @@ describe("buildTagTree", () => {
     // 层级标签的树根是父级节点
     expect(tree[0].path).toBe("读书");
     expect(tree[0].children[0].path).toBe("读书/心理学");
+  });
+});
+
+// 以下语义必须与后端 src-tauri/src/tags.rs 保持一致（浏览器 mock 直接复用这些函数）
+describe("标签前缀语义", () => {
+  it("tagMatchesPrefix：精确命中与子孙命中，前缀子串不命中", () => {
+    expect(tagMatchesPrefix("读书", "读书")).toBe(true);
+    expect(tagMatchesPrefix("读书/心理学", "读书")).toBe(true);
+    expect(tagMatchesPrefix("读书笔记", "读书")).toBe(false);
+    expect(tagMatchesPrefix("读书", "读书/心理学")).toBe(false);
+  });
+
+  it("countMemosWithTag：按笔记数统计，同一条里的重复标签只算一次", () => {
+    const memos = [memo(1, "#读书 #读书/心理学"), memo(2, "#读书笔记"), memo(3, "#运动")];
+    expect(countMemosWithTag(memos, "读书")).toBe(1);
+    expect(countMemosWithTag(memos, "读书笔记")).toBe(1);
+    expect(countMemosWithTag(memos, "不存在")).toBe(0);
+  });
+});
+
+describe("标签改写（与后端同语义）", () => {
+  it("renameTagInContent：只动标签边界内，子孙连带改前缀", () => {
+    expect(renameTagInContent("#读书笔记 很好", "读书", "阅读")).toBeNull();
+    expect(renameTagInContent("#读书 打卡", "读书", "阅读")).toBe("#阅读 打卡");
+    expect(renameTagInContent("看了 #读书/心理学", "读书", "阅读")).toBe("看了 #阅读/心理学");
+    expect(renameTagInContent("#读书 #读书/心理学", "读书", "阅读")).toBe(
+      "#阅读 #阅读/心理学",
+    );
+    expect(renameTagInContent("no tags", "读书", "阅读")).toBeNull();
+  });
+
+  it("removeTagInContent：删标签并清掉相邻的一个空格", () => {
+    expect(removeTagInContent("#运动 晨跑 5km", "运动")).toBe("晨跑 5km");
+    expect(removeTagInContent("晨跑 5km #运动", "运动")).toBe("晨跑 5km");
+    expect(removeTagInContent("晨跑 #运动 5km", "运动")).toBe("晨跑 5km");
+    expect(removeTagInContent("#读书/心理学 书评", "读书")).toBe("书评");
+    expect(removeTagInContent("#读书笔记 ok", "读书")).toBeNull();
+    expect(removeTagInContent("#a x #a/子 y", "a")).toBe("x y");
   });
 });

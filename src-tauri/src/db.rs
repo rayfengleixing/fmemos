@@ -118,6 +118,17 @@ fn auto_backup(conn: &rusqlite::Connection, exe_dir: &Path) {
     }
 }
 
+/// 从备份恢复之后调用：把库切回 WAL、补齐可能缺失的表结构、强制重建派生数据。
+/// 备份文件默认是 delete 日志模式，在线备份 API 会把它一并带过来，所以要手动切回；
+/// 老备份还可能缺 deleted_at 列、或派生数据版本与当前代码不一致，一并在这里抹平。
+pub fn sync_after_restore(conn: &rusqlite::Connection) -> Result<(), Box<dyn std::error::Error>> {
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+    migrate(conn)?;
+    rebuild_derived(conn)?;
+    conn.pragma_update(None, "user_version", DERIVED_VERSION)?;
+    Ok(())
+}
+
 /// 全量重建派生数据：FTS 索引 + 标签关联。整体在一个事务内，避免中途失败留下半重建状态。
 pub fn rebuild_derived(conn: &rusqlite::Connection) -> Result<(), Box<dyn std::error::Error>> {
     let tx = conn.unchecked_transaction()?;

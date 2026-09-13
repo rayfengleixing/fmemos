@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Memo } from "./types";
+import type { BackupInfo, Memo } from "./types";
 
 export async function listMemos(
   opts: {
@@ -54,6 +54,29 @@ export function emptyTrash(): Promise<number> {
 
 export function openBackupDir(): Promise<void> {
   return invoke<void>("open_backup_dir");
+}
+
+/**
+ * 重命名或合并标签：改写所有正文里的 `#from`（含 `from/` 子孙），返回受影响的笔记数。
+ * 合并到已有标签即把 to 传成那个标签。
+ */
+export function renameTag(from: string, to: string): Promise<number> {
+  return invoke<number>("rename_tag", { from, to });
+}
+
+/** 删除标签：从所有正文里移除 `#tag`（含子孙），返回受影响的笔记数 */
+export function deleteTag(tag: string): Promise<number> {
+  return invoke<number>("delete_tag", { tag });
+}
+
+/** 列出自动备份（最新在前）。浏览器调试模式返回假数据。 */
+export function listBackups(): Promise<BackupInfo[]> {
+  return invoke<BackupInfo[]>("list_backups");
+}
+
+/** 从备份恢复，返回恢复后的笔记条数 */
+export function restoreBackup(path: string): Promise<number> {
+  return invoke<number>("restore_backup", { path });
 }
 
 /** 导出结果：file = 已写入另存为选定的位置；download = 浏览器下载；cancel = 用户取消 */

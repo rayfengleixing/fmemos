@@ -1,8 +1,11 @@
+use std::path::{Path, PathBuf};
+
+use rusqlite::backup::Backup;
 use rusqlite::{params, params_from_iter, Connection, Row};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::db::Db;
+use crate::db::{self, Db};
 use crate::tags;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -278,6 +281,259 @@ pub fn empty_trash_impl(conn: &Connection) -> Result<usize, String> {
     Ok(n)
 }
 
+fn all_memo_contents(conn: &Connection) -> Result<Vec<(i64, String)>, String> {
+    let mut stmt = conn
+        .prepare("SELECT id, content FROM memos")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+/// 改写正文并同步 updated_at；FTS 索引由 memos_fts_au 触发器自动跟随，
+/// 标签关联需要手动重建（走 sync_tags 先删后插）。
+fn write_content(conn: &Connection, id: i64, content: &str) -> Result<(), String> {
+    conn.execute(
+        "UPDATE memos SET content = ?1, updated_at = datetime('now', 'localtime') WHERE id = ?2",
+        params![content, id],
+    )
+    .map_err(|e| e.to_string())?;
+    tags::sync_tags(conn, id, content).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 重命名（或合并到另一个）标签：改写所有正文里的 `#from`（含 `from/` 子孙），
+/// 返回受影响的笔记数。合并到已有标签就是把 to 传成那个标签。
+pub fn rename_tag_impl(conn: &Connection, from: &str, to: &str) -> Result<usize, String> {
+    let from = from.trim();
+    let to = to.trim();
+    if from.is_empty() || to.is_empty() {
+        return Err("标签名不能为空".into());
+    }
+    if from == to {
+        return Err("新标签名和原标签一样".into());
+    }
+    // 挡掉自嵌套：读书 → 读书/心理，或反过来把子标签改成父标签
+    if tags::tag_has_prefix(to, from) || tags::tag_has_prefix(from, to) {
+        return Err("新标签名不能是原标签的上级或下级".into());
+    }
+
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    let rows = all_memo_contents(&tx)?;
+    let mut affected = 0usize;
+    for (id, content) in rows {
+        let Some(next) = tags::rename_tag_in_content(&content, from, to) else {
+            continue;
+        };
+        write_content(&tx, id, &next)?;
+        affected += 1;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(affected)
+}
+
+/// 删除标签：从所有正文里移除 `#tag`（含 `tag/` 子孙），返回受影响的笔记数。
+/// 删完正文会变空的那条跳过——宁可标签留着，也不留下一张空卡片。
+pub fn delete_tag_impl(conn: &Connection, tag: &str) -> Result<usize, String> {
+    let tag = tag.trim();
+    if tag.is_empty() {
+        return Err("标签名不能为空".into());
+    }
+
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    let rows = all_memo_contents(&tx)?;
+    let mut affected = 0usize;
+    let mut skipped = 0usize;
+    for (id, content) in rows {
+        let Some(next) = tags::remove_tag_in_content(&content, tag) else {
+            continue;
+        };
+        let next = next.trim();
+        if next.is_empty() {
+            skipped += 1;
+            continue;
+        }
+        write_content(&tx, id, next)?;
+        affected += 1;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    if skipped > 0 {
+        eprintln!("delete_tag: {skipped} 条笔记正文只有该标签，已跳过");
+    }
+    Ok(affected)
+}
+
+#[tauri::command]
+pub fn rename_tag(db: State<Db>, from: String, to: String) -> Result<usize, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    rename_tag_impl(&conn, &from, &to)
+}
+
+#[tauri::command]
+pub fn delete_tag(db: State<Db>, tag: String) -> Result<usize, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    delete_tag_impl(&conn, &tag)
+}
+
+/// 备份目录：与 exe 同级的 backup/（便携模式，跟着程序走）
+pub fn backup_dir() -> Result<PathBuf, String> {
+    let exe_dir = std::env::current_exe()
+        .map_err(|e| e.to_string())?
+        .parent()
+        .ok_or("无法定位程序所在目录")?
+        .to_path_buf();
+    Ok(exe_dir.join("backup"))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupInfo {
+    pub name: String,
+    pub path: String,
+    /// 备份日期 "YYYY-MM-DD"（取自文件名）
+    pub date: String,
+    pub size_bytes: u64,
+}
+
+/// 备份文件名里的 YYYYMMDD → "YYYY-MM-DD"；格式不符返回 None
+fn fmt_backup_date(digits: &str) -> Option<String> {
+    if digits.len() != 8 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some(format!(
+        "{}-{}-{}",
+        &digits[0..4],
+        &digits[4..6],
+        &digits[6..8]
+    ))
+}
+
+/// 列出 backup/ 里的自动备份，最新的在前。恢复前的安全副本（before-restore-*）不算备份。
+#[tauri::command]
+pub fn list_backups() -> Result<Vec<BackupInfo>, String> {
+    let dir = backup_dir()?;
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut out: Vec<BackupInfo> = Vec::new();
+    for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())?.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().map(|n| n.to_string_lossy().to_string()) else {
+            continue;
+        };
+        let Some(digits) = name
+            .strip_prefix("fmemos-backup-")
+            .and_then(|s| s.strip_suffix(".db"))
+        else {
+            continue;
+        };
+        out.push(BackupInfo {
+            date: fmt_backup_date(digits).unwrap_or_else(|| digits.to_string()),
+            size_bytes: entry.metadata().map(|m| m.len()).unwrap_or(0),
+            path: path.to_string_lossy().to_string(),
+            name,
+        });
+    }
+    out.sort_by(|a, b| b.name.cmp(&a.name));
+    Ok(out)
+}
+
+/// 恢复前安全副本只保留最近 3 份
+fn prune_guards(dir: &Path) {
+    const KEEP: usize = 3;
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut guards: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("before-restore-"))
+        })
+        .collect();
+    guards.sort();
+    while guards.len() > KEEP {
+        let _ = std::fs::remove_file(guards.remove(0));
+    }
+}
+
+/// 恢复实现：校验备份 → 给当前数据留安全副本 → 在线备份反向写回 → 重建派生数据。
+/// 返回恢复后的笔记条数。独立成函数便于测试（测试传临时目录当 guard_dir）。
+pub fn restore_backup_impl(
+    conn: &mut Connection,
+    src_path: &Path,
+    guard_dir: &Path,
+) -> Result<usize, String> {
+    let src = Connection::open(src_path).map_err(|e| format!("打不开备份文件：{e}"))?;
+    // 损坏的备份直接拒绝，绝不动现有数据
+    let check: String = src
+        .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+        .map_err(|e| format!("备份文件无法读取：{e}"))?;
+    if check != "ok" {
+        return Err(format!("备份文件已损坏，已取消恢复（{check}）"));
+    }
+    let is_memo_db: i64 = src
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'memos'",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if is_memo_db == 0 {
+        return Err("这个文件不是 FMemos 的备份".into());
+    }
+
+    // 覆盖前先把当前数据另存一份，恢复错了还有退路
+    std::fs::create_dir_all(guard_dir).map_err(|e| e.to_string())?;
+    let ts: String = conn
+        .query_row("SELECT strftime('%Y%m%d-%H%M%S','now','localtime')", [], |r| {
+            r.get(0)
+        })
+        .map_err(|e| e.to_string())?;
+    {
+        let mut dst = Connection::open(guard_dir.join(format!("before-restore-{ts}.db")))
+            .map_err(|e| e.to_string())?;
+        Backup::new(conn, &mut dst)
+            .map_err(|e| e.to_string())?
+            .run_to_completion(64, std::time::Duration::from_millis(2), None)
+            .map_err(|e| e.to_string())?;
+    }
+    prune_guards(guard_dir);
+
+    // 反向在线备份：把备份内容写回当前连接，所以不用退出应用、也不用替换文件
+    // （Windows 上数据库文件被本进程占用，直接覆盖文件是做不到的）
+    Backup::new(&src, conn)
+        .map_err(|e| format!("恢复失败：{e}"))?
+        .run_to_completion(64, std::time::Duration::from_millis(2), None)
+        .map_err(|e| format!("恢复失败：{e}"))?;
+    // 老备份可能缺列或派生数据版本不一致，切回 WAL、补齐结构并强制重建索引与标签关联
+    db::sync_after_restore(conn).map_err(|e| e.to_string())?;
+
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM memos WHERE deleted_at IS NULL", [], |r| {
+            r.get(0)
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(count as usize)
+}
+
+/// 从备份恢复。只接受 backup/ 目录内的文件路径。
+#[tauri::command]
+pub fn restore_backup(db: State<Db>, path: String) -> Result<usize, String> {
+    let dir = backup_dir()?;
+    let canonical_dir = dir.canonicalize().map_err(|e| format!("备份目录不可用：{e}"))?;
+    let src = PathBuf::from(&path)
+        .canonicalize()
+        .map_err(|e| format!("找不到备份文件：{e}"))?;
+    if !src.starts_with(&canonical_dir) {
+        return Err("只能恢复备份文件夹里的文件".into());
+    }
+    let mut conn = db.0.lock().map_err(|e| e.to_string())?;
+    restore_backup_impl(&mut conn, &src, &canonical_dir)
+}
+
 /// 构建全量 Markdown 导出内容，返回（内容, 条数）。
 pub fn build_export_markdown(conn: &Connection) -> Result<(String, usize), String> {
     let memos = list_memos_page(conn, None, None, false, None, false, None, None)?;
@@ -314,12 +570,7 @@ pub fn export_to(db: State<Db>, path: String) -> Result<usize, String> {
 #[tauri::command]
 pub fn open_backup_dir(app: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
-    let exe_dir = std::env::current_exe()
-        .map_err(|e| e.to_string())?
-        .parent()
-        .ok_or("无法定位程序所在目录")?
-        .to_path_buf();
-    let dir = exe_dir.join("backup");
+    let dir = backup_dir()?;
     if !dir.exists() {
         return Err("备份目录还不存在（首次启动完成备份后自动创建）".into());
     }
@@ -658,5 +909,131 @@ mod tests {
         )
         .unwrap();
         assert_eq!(got.len(), 1);
+    }
+
+    #[test]
+    fn rename_tag_rewrites_content_and_index() {
+        let conn = setup();
+        create_memo_impl(&conn, "#读书 打卡").unwrap();
+        create_memo_impl(&conn, "#读书/心理学 锚定效应").unwrap();
+        create_memo_impl(&conn, "#读书笔记 别动我").unwrap();
+
+        let n = rename_tag_impl(&conn, "读书", "阅读").unwrap();
+        assert_eq!(n, 2);
+
+        // 父标签连带子孙一起改了：旧路径查不到，新路径两条都命中
+        assert!(list_memos_impl(&conn, Some("读书".into()), None, false, None)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            list_memos_impl(&conn, Some("阅读".into()), None, false, None)
+                .unwrap()
+                .len(),
+            2
+        );
+        let sub = list_memos_impl(&conn, Some("阅读/心理学".into()), None, false, None).unwrap();
+        assert_eq!(sub.len(), 1);
+        assert!(sub[0].content.contains("#阅读/心理学"));
+        // 前缀子串不误伤
+        assert_eq!(
+            list_memos_impl(&conn, Some("读书笔记".into()), None, false, None)
+                .unwrap()
+                .len(),
+            1
+        );
+        // FTS 索引跟着更新：按新标签全文搜得到
+        assert_eq!(
+            list_memos_impl(&conn, None, Some("阅读/心理学".into()), false, None)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // 自嵌套与空名挡掉
+        assert!(rename_tag_impl(&conn, "阅读", "阅读/子").is_err());
+        assert!(rename_tag_impl(&conn, "阅读", "阅读").is_err());
+        assert!(rename_tag_impl(&conn, "", "x").is_err());
+    }
+
+    #[test]
+    fn delete_tag_skips_memos_that_would_become_empty() {
+        let conn = setup();
+        create_memo_impl(&conn, "#读书 打卡").unwrap();
+        create_memo_impl(&conn, "#读书").unwrap();
+        create_memo_impl(&conn, "#读书/心理学 书评").unwrap();
+
+        let n = delete_tag_impl(&conn, "读书").unwrap();
+        assert_eq!(n, 2);
+        // 正文只有该标签的那条被跳过，所以「读书」还剩 1 条命中
+        assert_eq!(
+            list_memos_impl(&conn, Some("读书".into()), None, false, None)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // 正文只有标签的那条原样留着，不会变成空卡片
+        let all = list_memos_impl(&conn, None, None, false, None).unwrap();
+        assert_eq!(all.len(), 3);
+        assert!(all.iter().any(|m| m.content == "#读书"));
+        // 另外两条变成无标签
+        assert_eq!(
+            list_memos_impl(&conn, None, None, true, None).unwrap().len(),
+            2
+        );
+    }
+
+    #[test]
+    fn restore_backup_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("fmemos-test-restore-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let backup_path = dir.join("fmemos-backup-20250101.db");
+
+        // 造一份「备份」：两条旧笔记
+        {
+            let src = Connection::open(&backup_path).unwrap();
+            db::migrate(&src).unwrap();
+            create_memo_impl(&src, "旧笔记一 #归档").unwrap();
+            create_memo_impl(&src, "旧笔记二").unwrap();
+        }
+
+        // 当前库：一条笔记，口径与备份不同
+        let mut conn = db::open_conn(&dir.join("main.db")).unwrap();
+        create_memo_impl(&conn, "现在这条会被覆盖").unwrap();
+
+        let guard = dir.join("guard");
+        let n = restore_backup_impl(&mut conn, &backup_path, &guard).unwrap();
+        assert_eq!(n, 2);
+
+        let all = list_memos_impl(&conn, None, None, false, None).unwrap();
+        assert_eq!(all.len(), 2);
+        assert!(all.iter().all(|m| m.content.starts_with("旧笔记")));
+        // 派生数据重建后标签关联可用
+        assert_eq!(
+            list_memos_impl(&conn, Some("归档".into()), None, false, None)
+                .unwrap()
+                .len(),
+            1
+        );
+        // 恢复前留了安全副本
+        assert!(std::fs::read_dir(&guard).unwrap().count() >= 1);
+        // 恢复后回到 WAL，能继续写
+        let mode: String = conn
+            .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(mode, "wal");
+        create_memo_impl(&conn, "恢复后新增的一条").unwrap();
+
+        // 损坏的备份被拒绝，现有数据不动
+        let broken = dir.join("broken.db");
+        std::fs::write(&broken, b"not a database").unwrap();
+        assert!(restore_backup_impl(&mut conn, &broken, &guard).is_err());
+        assert_eq!(
+            list_memos_impl(&conn, None, None, false, None).unwrap().len(),
+            3
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

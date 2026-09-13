@@ -6,9 +6,10 @@ import MemoCard from "./components/MemoCard";
 import ReviewModal from "./components/ReviewModal";
 import SettingsModal from "./components/SettingsModal";
 import Sidebar from "./components/Sidebar";
+import TagManageModal from "./components/TagManageModal";
 import * as api from "./lib/api";
 import { dateHeaderLabel, toDateKey } from "./lib/format";
-import { buildTagTree, extractTags } from "./lib/tags";
+import { buildTagTree, countMemosWithTag, extractTags, tagMatchesPrefix } from "./lib/tags";
 import type { Memo, TagNode, ThemeMode } from "./lib/types";
 
 /** 卡片流分页大小：滚动到底部附近自动加载下一页 */
@@ -58,6 +59,8 @@ export default function App() {
   const [trashView, setTrashView] = useState(false);
   const [trashMemos, setTrashMemos] = useState<Memo[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  /** 正在管理（重命名 / 合并 / 删除）的标签路径 */
+  const [manageTag, setManageTag] = useState<string | null>(null);
   const [toast, setToast] = useState<ToastState | null>(null);
   const toastTimer = useRef<number | undefined>(undefined);
 
@@ -306,6 +309,40 @@ export default function App() {
       .catch((e) => setError(`清空失败：${e}`));
   }, [trashMemos.length, refresh, showToast]);
 
+  // 标签治理：失败时把异常抛回弹窗内联展示，不再顶一条全局横幅
+  const handleRenameTag = useCallback(
+    async (from: string, to: string) => {
+      const n = await api.renameTag(from, to);
+      await refresh();
+      // 当前筛选的标签正好被改名 / 合并时，跟随到新路径，别停在已不存在的旧标签上
+      setActiveTag((cur) =>
+        cur && tagMatchesPrefix(cur, from) ? to + cur.slice(from.length) : cur,
+      );
+      showToast(`已更新 ${n} 条笔记的标签`);
+    },
+    [refresh, showToast],
+  );
+
+  const handleDeleteTag = useCallback(
+    async (tag: string) => {
+      const n = await api.deleteTag(tag);
+      await refresh();
+      setActiveTag((cur) => (cur && tagMatchesPrefix(cur, tag) ? null : cur));
+      showToast(`已从 ${n} 条笔记里移除 #${tag}`);
+    },
+    [refresh, showToast],
+  );
+
+  // 从备份恢复后：数据整体换了，先回到「全部笔记」再刷新
+  const handleRestored = useCallback(async () => {
+    setActiveTag(null);
+    setActiveDate(null);
+    setUntagged(false);
+    setQuery("");
+    setTrashView(false);
+    await refresh();
+  }, [refresh]);
+
   const selectAll = useCallback(() => {
     setActiveTag(null);
     setActiveDate(null);
@@ -408,6 +445,18 @@ export default function App() {
     [allMemos],
   );
 
+  // 标签治理弹窗：会改写多少条笔记（回收站里的也算）、可合并到哪些标签
+  const manageAffected = useMemo(
+    () => (manageTag ? countMemosWithTag([...allMemos, ...trashMemos], manageTag) : 0),
+    [manageTag, allMemos, trashMemos],
+  );
+  const mergeCandidates = useMemo(() => {
+    if (!manageTag) return [];
+    return allTags.filter(
+      (t) => t !== manageTag && !t.startsWith(`${manageTag}/`) && !manageTag.startsWith(`${t}/`),
+    );
+  }, [allTags, manageTag]);
+
   const heatCounts = useMemo(() => {
     const map = new Map<string, number>();
     for (const m of allMemos) {
@@ -461,6 +510,7 @@ export default function App() {
         trashActive={trashView}
         onOpenTrash={openTrash}
         onOpenSettings={() => setSettingsOpen(true)}
+        onManageTag={setManageTag}
       />
       <main className="main" ref={mainRef} onScroll={handleMainScroll}>
         <div className="main-inner">
@@ -558,7 +608,19 @@ export default function App() {
           theme={theme}
           onThemeChange={setTheme}
           notify={showToast}
+          onRestored={handleRestored}
           onClose={() => setSettingsOpen(false)}
+        />
+      )}
+
+      {manageTag && (
+        <TagManageModal
+          tag={manageTag}
+          affected={manageAffected}
+          candidateTags={mergeCandidates}
+          onRename={handleRenameTag}
+          onDelete={handleDeleteTag}
+          onClose={() => setManageTag(null)}
         />
       )}
 

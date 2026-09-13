@@ -17,3 +17,11 @@ export interface TagNode {
 /** 外观主题：浅色 / 深色 / 跟随系统 */
 export type ThemeMode = "light" | "dark" | "system";
 
+/** 自动备份文件信息（来自 exe 旁 backup/ 目录） */
+export interface BackupInfo {
+  name: string;
+  path: string;
+  /** 备份日期 "YYYY-MM-DD" */
+  date: string;
+  sizeBytes: number;
+}

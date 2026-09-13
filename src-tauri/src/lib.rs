@@ -124,9 +124,13 @@ pub fn run() {
             commands::restore_memo,
             commands::purge_memo,
             commands::empty_trash,
+            commands::rename_tag,
+            commands::delete_tag,
             commands::export_markdown,
             commands::export_to,
             commands::open_backup_dir,
+            commands::list_backups,
+            commands::restore_backup,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
