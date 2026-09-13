@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { renderMarkdown } from "../lib/md";
+import MemoImage from "./MemoImage";
 import type { Memo } from "../lib/types";
 
 interface Props {
@@ -41,7 +42,9 @@ export default function ReviewModal({
             ×
           </button>
         </div>
-        <div className="review-body md">{renderMarkdown(memo.content, { onTagClick })}</div>
+        <div className="review-body md">
+          {renderMarkdown(memo.content, { onTagClick, renderImage: (id, alt) => <MemoImage id={id} alt={alt} /> })}
+        </div>
         <div className="review-foot">
           <span title={memo.createdAt}>{memo.createdAt}</span>
           <span className="review-actions">
