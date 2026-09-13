@@ -352,6 +352,50 @@ nav .side-section:first-child {
   margin-top: 8px;
 }
 
+/* 实时预览开关：小号幽灵按钮，激活时主题色描边 */
+.editor-toggle {
+  margin-left: auto;
+  margin-right: 10px;
+  padding: 3px 10px;
+  font-size: 12px;
+  color: var(--text-secondary, #888);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.editor-toggle:hover {
+  color: var(--primary);
+  border-color: var(--primary);
+}
+
+.editor-toggle.active {
+  color: var(--primary);
+  border-color: var(--primary);
+  background: var(--primary-alpha, rgba(62, 180, 119, 0.1));
+}
+
+/* 输入框实时预览面板：与卡片正文同一套 .md 渲染样式，限高可滚动 */
+.editor-preview {
+  margin-top: 10px;
+  padding: 10px 12px;
+  max-height: 220px;
+  overflow-y: auto;
+  font-size: 14.5px;
+  line-height: 1.75;
+  background: var(--bg, #f7f7f7);
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.editor-preview:empty {
+  display: none;
+}
+
 /* # 自动补全下拉：锚定在 TagInput 包装层（即 textarea 区域），从输入区底部向上展开 */
 .tag-input {
   position: relative;

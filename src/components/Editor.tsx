@@ -1,5 +1,7 @@
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import TagInput from "./TagInput";
+import MemoImage from "./MemoImage";
+import { renderMarkdown } from "../lib/md";
 import { insertAtCaret, useImagePaste } from "../lib/useImagePaste";
 
 interface Props {
@@ -14,6 +16,8 @@ interface Props {
 
 /** 未发送的草稿存 localStorage，重启 / 误关窗口后不丢 */
 const DRAFT_KEY = "memos.editor-draft";
+/** 实时预览开关的记忆键 */
+const PREVIEW_KEY = "memos.editor-preview";
 
 function loadDraft(): string {
   try {
@@ -23,9 +27,18 @@ function loadDraft(): string {
   }
 }
 
+function loadPreviewPref(): boolean {
+  try {
+    return localStorage.getItem(PREVIEW_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
 function Editor({ onCreate, focusSignal, allTags, onError }: Props) {
   const [content, setContent] = useState(loadDraft);
   const [sending, setSending] = useState(false);
+  const [previewOn, setPreviewOn] = useState(loadPreviewPref);
   const ref = useRef<HTMLDivElement>(null);
 
   // 粘贴 / 拖入图片：入库后在光标处插入 image:// 引用
@@ -50,6 +63,27 @@ function Editor({ onCreate, focusSignal, allTags, onError }: Props) {
       ref.current?.querySelector("textarea")?.focus();
     }
   }, [focusSignal]);
+
+  // 预览渲染结果按内容记忆化：与卡片正文同一套渲染器（含图片、标签、TODO）
+  const preview = useMemo(
+    () =>
+      renderMarkdown(content, {
+        renderImage: (id, alt) => <MemoImage id={id} alt={alt} />,
+      }),
+    [content],
+  );
+
+  const togglePreview = () => {
+    setPreviewOn((v) => {
+      const next = !v;
+      try {
+        localStorage.setItem(PREVIEW_KEY, next ? "1" : "0");
+      } catch {
+        // localStorage 不可用时本次会话内仍然生效
+      }
+      return next;
+    });
+  };
 
   const send = async () => {
     const text = content.trim();
@@ -82,12 +116,22 @@ function Editor({ onCreate, focusSignal, allTags, onError }: Props) {
           }
         }}
       />
+      {previewOn && content.trim() ? (
+        <div className="editor-preview md">{preview}</div>
+      ) : null}
       <div className="editor-footer">
         <span className="editor-hint">
           {uploading
             ? "图片上传中…"
             : "Ctrl + Enter 发送 · # 打标签 · 可直接粘贴图片"}
         </span>
+        <button
+          className={"editor-toggle" + (previewOn ? " active" : "")}
+          title="实时预览 Markdown 渲染效果"
+          onClick={togglePreview}
+        >
+          预览
+        </button>
         <button
           className="btn-primary"
           disabled={!content.trim() || sending}
