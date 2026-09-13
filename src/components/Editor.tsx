@@ -89,21 +89,19 @@ function Editor({ onCreate, focusSignal, allTags, onError }: Props) {
         onError={onError}
         onKeyDown={handleKeyDown}
         editorRef={editorRef}
+        toolbarExtra={
+          <>
+            {uploading && <span className="editor-hint">图片上传中…</span>}
+            <button
+              className="btn-primary"
+              disabled={!content.trim() || sending}
+              onClick={() => void send()}
+            >
+              {sending ? "记录中..." : "记录"}
+            </button>
+          </>
+        }
       />
-      <div className="editor-footer">
-        <span className="editor-hint">
-          {uploading
-            ? "图片上传中…"
-            : "Ctrl + Enter 发送 · # 打标签 · 可直接粘贴图片"}
-        </span>
-        <button
-          className="btn-primary"
-          disabled={!content.trim() || sending}
-          onClick={() => void send()}
-        >
-          {sending ? "记录中..." : "记录"}
-        </button>
-      </div>
     </div>
   );
 }

@@ -1,4 +1,14 @@
 /* flomo 风格：留白多、绿色主调；浅色默认，深色跟随 data-theme 或系统 */
+
+/* 全局隐藏滚动条（滚动功能不受影响）：界面更干净，位置由滚轮 / 触控板承担 */
+*::-webkit-scrollbar {
+  display: none;
+}
+
+* {
+  scrollbar-width: none;
+}
+
 :root {
   --primary: #3eb477;
   --primary-hover: #35a06a;
@@ -103,7 +113,7 @@ button {
 
 /* ---------- 侧栏 ---------- */
 .sidebar {
-  width: 232px;
+  width: 260px;
   flex-shrink: 0;
   background: var(--sidebar-bg);
   border-right: 1px solid var(--border);
@@ -296,6 +306,17 @@ nav .side-section:first-child {
   border-top: 1px dashed var(--border);
 }
 
+/* 工具栏右侧插槽（发送按钮 / 上传提示），把内容推到行尾 */
+.tb-spacer {
+  flex: 1;
+}
+
+/* 发送按钮放进工具栏行时收小一号，与图标按钮高度协调 */
+.rich-toolbar .btn-primary {
+  padding: 4px 14px;
+  font-size: 13px;
+}
+
 .tb-btn {
   display: inline-flex;
   align-items: center;
@@ -385,13 +406,6 @@ nav .side-section:first-child {
 /* 图片节点在编辑态与卡片渲染态同款（.memo-img 样式全局复用） */
 .memo-img-wrap {
   display: inline-block;
-}
-
-.editor-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-top: 8px;
 }
 
 /* # 自动补全下拉：锚定在编辑器容器内，随光标位置展开 */
@@ -533,6 +547,12 @@ nav .side-section:first-child {
   color: var(--primary);
   font-weight: 500;
   cursor: pointer;
+}
+
+/* 编辑器里的 # 标签与卡片正文同款着色（不可点击，无指针样式） */
+.rich-content .tag {
+  color: var(--primary);
+  font-weight: 500;
 }
 
 .memo-body .tag:hover {

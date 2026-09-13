@@ -1,6 +1,6 @@
 [package]
 name = "fmemos"
-version = "0.13.1"
+version = "0.13.2"
 description = "FMemos - flomo 风格的本地卡片笔记"
 authors = ["you"]
 edition = "2021"

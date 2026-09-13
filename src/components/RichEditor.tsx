@@ -16,6 +16,7 @@ import Suggestion, { type SuggestionProps } from "@tiptap/suggestion";
 import MemoImage from "./MemoImage";
 import { docToMd, mdToDoc } from "../lib/tiptap-md";
 import { uploadImageFile } from "../lib/useImagePaste";
+import { TAG_PARTIAL_RE } from "../lib/tags";
 
 /**
  * TipTap 所见即所得编辑器（0.12.0 起，替代 TagTextarea）：
@@ -42,6 +43,8 @@ interface Props {
   editorRef?: RefObject<Editor | null>;
   /** 编辑区下方显示格式工具栏（标签 / 加粗 / 代码 / 列表 / 任务 / 图片） */
   toolbar?: boolean;
+  /** 工具栏行尾插槽（flex:1 推到右侧）：主输入框放发送按钮等 */
+  toolbarExtra?: ReactNode;
   /** 图片上传失败等提示 */
   onError?: (message: string) => void;
 }
@@ -152,7 +155,16 @@ function createTagSuggestion(
               .filter((t) => t.toLowerCase().includes(query.toLowerCase()))
               .slice(0, MAX_SUGGESTIONS),
           command: ({ editor: ed, range, props: tag }) => {
-            ed.chain().focus().deleteRange(range).insertContent(`#${tag} `).run();
+            // 插入的 #标签 自带 tag mark（着色），结算空格单独一个节点不染色
+            ed
+              .chain()
+              .focus()
+              .deleteRange(range)
+              .insertContentAt(range.from, [
+                { type: "text", text: `#${tag}`, marks: [{ type: "tag", attrs: { tag } }] },
+                { type: "text", text: " " },
+              ])
+              .run();
           },
           // 行内代码与代码块里不触发补全
           allow: ({ state, range }) => {
@@ -222,6 +234,7 @@ export default function RichEditor({
   onKeyDown,
   editorRef,
   toolbar,
+  toolbarExtra,
   onError,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -263,6 +276,23 @@ export default function RichEditor({
     editorProps: {
       attributes: { class: "md rich-content" },
       handleKeyDown: (_view, event) => onKeyDownRef.current?.(event) ?? false,
+      // 打字时结算标签：输入空格意味着 #标签 结束，把前面的 #xxx 套上 tag mark
+      //（与卡片渲染同一套 TAG_PARTIAL_RE 口径；代码块 / 行内代码里不结算）
+      handleTextInput: (view, from, to, text) => {
+        if (text !== " ") return false;
+        const { state } = view;
+        const $from = state.selection.$from;
+        if ($from.parent.type.name === "codeBlock") return false;
+        if ($from.marks().some((m) => m.type.name === "code")) return false;
+        const before = state.doc.textBetween(Math.max(0, from - 100), from, "\n\n", "\0");
+        const m = TAG_PARTIAL_RE.exec(before);
+        if (!m || !m[1]) return false; // 光标前没有 #，或只有孤零零的 #
+        const tr = state.tr;
+        tr.insertText(text, from, to); // 结算空格正常落盘（不染色）
+        tr.addMark(from - m[0].length, from, state.schema.marks.tag.create({ tag: m[1] }));
+        view.dispatch(tr);
+        return true;
+      },
     },
     onUpdate: ({ editor: ed }) => onChangeRef.current(docToMd(ed.getJSON())),
   });
@@ -285,7 +315,7 @@ export default function RichEditor({
   return (
     <div className="rich-editor" ref={wrapRef}>
       <EditorContent editor={editor} />
-      {toolbar && editor && <EditorToolbar editor={editor} onError={onError} />}
+      {toolbar && editor && <EditorToolbar editor={editor} onError={onError} extra={toolbarExtra} />}
       {suggest && editor && (
         <SuggestPopup
           state={suggest}
@@ -337,7 +367,16 @@ const ICONS = {
  * 编辑区下方的格式工具栏。全部按钮 onMouseDown + preventDefault：
  * 点击不抢编辑器焦点，命令作用在当前光标 / 选区上。
  */
-function EditorToolbar({ editor, onError }: { editor: Editor; onError?: (message: string) => void }) {
+function EditorToolbar({
+  editor,
+  onError,
+  extra,
+}: {
+  editor: Editor;
+  onError?: (message: string) => void;
+  /** 行尾插槽（发送按钮等），flex:1 推到右侧 */
+  extra?: ReactNode;
+}) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
 
@@ -441,6 +480,8 @@ function EditorToolbar({ editor, onError }: { editor: Editor; onError?: (message
         () => fileRef.current?.click(),
         <Icon d={ICONS.image} />,
       )}
+      <span className="tb-spacer" />
+      {extra}
       <input
         ref={fileRef}
         type="file"
@@ -452,7 +493,7 @@ function EditorToolbar({ editor, onError }: { editor: Editor; onError?: (message
   );
 }
 
-/** 鼠标点选补全项：把 #query 替换成完整标签（与键盘 Enter 同一条路径） */
+/** 鼠标点选补全项：把 #query 替换成完整标签（与键盘 Enter 同一条路径，带 tag mark） */
 function applySuggest(editor: Editor, tag: string) {
   const { state } = editor;
   const { from } = state.selection;
@@ -464,7 +505,10 @@ function applySuggest(editor: Editor, tag: string) {
     .chain()
     .focus()
     .deleteRange({ from: start, to: from })
-    .insertContent(`#${tag} `)
+    .insertContentAt(start, [
+      { type: "text", text: `#${tag}`, marks: [{ type: "tag", attrs: { tag } }] },
+      { type: "text", text: " " },
+    ])
     .run();
 }
 
