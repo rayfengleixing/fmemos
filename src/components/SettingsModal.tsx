@@ -244,6 +244,8 @@ export default function SettingsModal({
           <p className="settings-desc">
             每天首次启动时自动把完整数据库备份到程序旁的 backup 文件夹，保留最近 5 份。
             恢复会用所选备份覆盖当前数据（恢复前自动留安全副本），立即生效、不用重启。
+            数据库已用 SQLCipher 整库加密，密钥在程序目录的 fmemos.key——
+            备份 / 拷贝数据库到别的机器时请连同密钥文件一起带走，密钥丢了数据无法找回。
           </p>
           <div className="settings-actions">
             <button className="btn-ghost" onClick={() => void openBackup()}>

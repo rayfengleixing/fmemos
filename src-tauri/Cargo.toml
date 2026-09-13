@@ -1,6 +1,6 @@
 [package]
 name = "fmemos"
-version = "0.9.0"
+version = "0.10.0"
 description = "FMemos - flomo 风格的本地卡片笔记"
 authors = ["you"]
 edition = "2021"
@@ -33,7 +33,10 @@ tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rusqlite = { version = "0.37", features = ["bundled", "backup"] }
+# SQLCipher 加密；vendored-openssl 让 openssl-src 从源码编 OpenSSL（需要 perl，见 .cargo/config.toml）
+rusqlite = { version = "0.37", features = ["bundled-sqlcipher-vendored-openssl", "backup"] }
 base64 = "0.22"
 sha2 = "0.10"
+# 生成加密密钥用（Windows 走 BCrypt）
+getrandom = "0.2"
 

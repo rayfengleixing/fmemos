@@ -515,8 +515,15 @@ pub fn restore_backup_impl(
     conn: &mut Connection,
     src_path: &Path,
     guard_dir: &Path,
+    key: Option<&str>,
 ) -> Result<usize, String> {
-    let src = Connection::open(src_path).map_err(|e| format!("打不开备份文件：{e}"))?;
+    // 主库加密时，备份源也必须是同密钥的加密库——明文 / 错密钥在这里就会暴露，数据不动
+    let src = db::open_keyed(src_path, key).map_err(|e| {
+        format!(
+            "{e}；若这个备份来自启用加密之前的旧版本，\
+             请先用「导出」把旧库数据带出来，再用「导入」迁进来"
+        )
+    })?;
     // 损坏的备份直接拒绝，绝不动现有数据
     let check: String = src
         .query_row("PRAGMA integrity_check", [], |r| r.get(0))
@@ -543,8 +550,12 @@ pub fn restore_backup_impl(
         })
         .map_err(|e| e.to_string())?;
     {
-        let mut dst = Connection::open(guard_dir.join(format!("before-restore-{ts}.db")))
-            .map_err(|e| e.to_string())?;
+        // 安全副本与主库同密钥，恢复失败时它自己还能被正常打开
+        let mut dst = db::open_keyed(
+            &guard_dir.join(format!("before-restore-{ts}.db")),
+            key,
+        )
+        .map_err(|e| e.to_string())?;
         Backup::new(conn, &mut dst)
             .map_err(|e| e.to_string())?
             .run_to_completion(64, std::time::Duration::from_millis(2), None)
@@ -581,7 +592,7 @@ pub fn restore_backup(db: State<Db>, path: String) -> Result<usize, String> {
         return Err("只能恢复备份文件夹里的文件".into());
     }
     let mut conn = db.0.lock().map_err(|e| e.to_string())?;
-    restore_backup_impl(&mut conn, &src, &canonical_dir)
+    restore_backup_impl(&mut conn, &src, &canonical_dir, db.1.as_deref())
 }
 
 /// 导出筛选条件：与 list_memos 的前几个过滤参数同源，全为空 = 导出全部。
@@ -1644,7 +1655,7 @@ mod tests {
         create_memo_impl(&conn, "现在这条会被覆盖").unwrap();
 
         let guard = dir.join("guard");
-        let n = restore_backup_impl(&mut conn, &backup_path, &guard).unwrap();
+        let n = restore_backup_impl(&mut conn, &backup_path, &guard, None).unwrap();
         assert_eq!(n, 2);
 
         let all = list_memos_impl(&conn, None, None, false, None).unwrap();
@@ -1669,7 +1680,7 @@ mod tests {
         // 损坏的备份被拒绝，现有数据不动
         let broken = dir.join("broken.db");
         std::fs::write(&broken, b"not a database").unwrap();
-        assert!(restore_backup_impl(&mut conn, &broken, &guard).is_err());
+        assert!(restore_backup_impl(&mut conn, &broken, &guard, None).is_err());
         assert_eq!(
             list_memos_impl(&conn, None, None, false, None).unwrap().len(),
             3

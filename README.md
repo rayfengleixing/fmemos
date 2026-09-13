@@ -60,7 +60,8 @@ flomo 风格的本地卡片笔记：**Tauri 2 + React 19 + SQLite**，数据完�
 
 **数据安全**
 
-- 自动备份：每天首次启动自动把完整数据库快照到程序旁 `backup/`，保留最近 5 份（SQLite 在线备份，WAL 下也是一致快照）
+- 整库加密（SQLCipher）：数据库文件（含 WAL、自动备份、恢复副本）全部 AES-256 加密，拷走 `fmemos.db` 也只是拿到一堆密文。密钥是首次启动自动生成的随机 32 字节，存在程序目录的 `fmemos.key`；**密钥丢了数据无法找回**，拷库到别的机器请连密钥文件一起带走。从明文库升级会在首次启动自动迁移（明文原件留底为 `fmemos.db.plain-backup`，确认无误后可删）
+- 自动备份：每天首次启动自动把完整数据库快照到程序旁 `backup/`，保留最近 5 份（SQLite 在线备份，WAL 下也是一致快照；备份文件同样加密）
 - 从备份恢复：设置 → 「从备份恢复」列出全部备份，选中即可回滚；恢复前自动把当前数据另存为安全副本（`before-restore-*`，保留最近 3 份），且走在线备份 API 反向写回，**不用退出应用**、立即生效
 - 图片粘贴与附件：在输入框直接**粘贴或拖入**图片（编辑卡片时也可以），图片字节以 BLOB 存进数据库、正文用 `![图片](image://<id>)` 引用；卡片里显示缩略图，点击放大预览；相同图片自动去重只存一份
 - 数据导出：设置 → 导出，格式可选 **Markdown**（便于阅读）或 **JSON**（保留精确时间戳、置顶状态与标签数组）；勾选「只导出当前筛选」就只导出正在看的那一批；导出的 Markdown 会把引用图片写到同名 `.assets/` 目录，拿到别的机器图片也还在
@@ -139,6 +140,7 @@ npm run tauri build   # 在 fmemos 目录执行
 - 产物：`src-tauri/target/release/bundle/nsis/FMemos_{版本}_{架构}-setup.exe`，文件名自带版本号
 - 发版前把版本号三处同步修改：`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`、`package.json`
 - 注：`Cargo.toml` 里 `opt-level = 1` 是 8GB 内存机器的编译求生配置（压低 rustc 内存峰值防 OOM），代价是运行时性能；内存宽裕的机器可调回 2
+- 注：SQLCipher 依赖 vendored OpenSSL 编译，需要 perl——仓库根的 `.cargo/config.toml` 已指向便携版 Strawberry Perl（解压在 `~/.workbuddy/binaries/perl-dl/`，非系统安装），换机器编译时按需改路径
 
 ## 技术要点
 
@@ -159,4 +161,4 @@ npm run tauri build   # 在 fmemos 目录执行
 
 ## 后续路线
 
-- [ ] 数据库加密（SQLCipher）
+（暂无——三梯队规划已全部落地）

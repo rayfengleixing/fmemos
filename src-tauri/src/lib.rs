@@ -31,8 +31,8 @@ pub fn run() {
             None,
         ))
         .setup(|app| {
-            let conn = db::init().expect("failed to initialize database");
-            app.manage(db::Db(std::sync::Mutex::new(conn)));
+            let (conn, key) = db::init().expect("failed to initialize database");
+            app.manage(db::Db(std::sync::Mutex::new(conn), Some(key)));
 
             #[cfg(desktop)]
             {

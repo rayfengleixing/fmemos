@@ -1,0 +1,6 @@
+# SQLCipher 依赖链里 vendored OpenSSL 的编译需要 perl（Configure 是 perl 脚本），
+# 机器上没装 Perl，这里指向随项目安装的便携版 Strawberry Perl（.workbuddy/binaries/perl-dl 解压产物）。
+# 没有 NASM，所以用 OPENSSL_NO_ASM=1 关闭汇编优化（纯 C 编译，慢一点但功能一致）。
+[env]
+OPENSSL_SRC_PERL = 'C:\Users\ray\.workbuddy\binaries\perl-dl\perl\bin\perl.exe'
+OPENSSL_NO_ASM = '1'
