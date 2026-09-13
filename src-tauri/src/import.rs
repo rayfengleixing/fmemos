@@ -14,6 +14,8 @@ pub struct ImportedMemo {
     /// 已校验的时间戳 "YYYY-MM-DD HH:MM:SS"；None = 由调用方给兜底时间
     pub created_at: Option<String>,
     pub content: String,
+    /// 置顶时间；只有 FMemos 自己导出的 JSON 才带，其余来源恒为 None
+    pub pinned_at: Option<String>,
 }
 
 /// 去重键：行尾统一成 LF，去掉首尾空白。
@@ -109,6 +111,7 @@ pub fn split_markdown_sections(text: &str, fallback: Option<&str>) -> Vec<Import
         return vec![ImportedMemo {
             created_at: fallback.and_then(normalize_timestamp),
             content: body,
+            pinned_at: None,
         }];
     }
     sections
@@ -116,6 +119,7 @@ pub fn split_markdown_sections(text: &str, fallback: Option<&str>) -> Vec<Import
         .map(|(ts, body)| ImportedMemo {
             created_at: Some(ts),
             content: trim_section_body(&body),
+            pinned_at: None,
         })
         .filter(|m| !m.content.is_empty())
         .collect()
@@ -149,7 +153,48 @@ pub fn extension_of(path: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// 按扩展名解析文本内容：`.html` / `.htm` 走 flomo 导出解析，其余按 Markdown 分节。
+/// 解析 FMemos 自己导出的 JSON（`export_to` / 每日导出产物），用于备份回灌。
+/// 只认结构：顶层要有 `memos` 数组，每条取 `content` / `createdAt` / `pinnedAt`；
+/// `id` / `tags` 不导入——标签正文里就有，入库时重新解析；id 由新库自己分配。
+/// 不是合法 JSON 或没有 `memos` 数组时返回 Err，由调用方带上文件名报给用户。
+pub fn parse_json_export(text: &str) -> Result<Vec<ImportedMemo>, String> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Item {
+        #[serde(default)]
+        content: String,
+        #[serde(default)]
+        created_at: Option<String>,
+        #[serde(default)]
+        pinned_at: Option<String>,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Doc {
+        #[serde(default)]
+        app: Option<String>,
+        #[serde(default)]
+        memos: Vec<Item>,
+    }
+
+    let doc: Doc = serde_json::from_str(text).map_err(|e| format!("不是有效的 JSON：{e}"))?;
+    if doc.app.as_deref() != Some("FMemos") && doc.memos.is_empty() {
+        return Err("不是 FMemos 导出的 JSON（缺少 app/memos 字段）".into());
+    }
+    Ok(doc
+        .memos
+        .into_iter()
+        .map(|m| ImportedMemo {
+            created_at: m.created_at.as_deref().and_then(normalize_timestamp),
+            content: m.content.trim().to_string(),
+            // 置顶时间同样过一遍校验，脏数据退回未置顶
+            pinned_at: m.pinned_at.as_deref().and_then(normalize_timestamp),
+        })
+        .collect())
+}
+
+/// 按扩展名解析文本内容：`.html` / `.htm` 走 flomo 导出解析，`.json` 走 FMemos 导出回灌
+/// （在 `import_path_impl` 里单独分派，因为要向用户报结构化错误），其余按 Markdown 分节。
 /// fallback 为时间兜底（通常是文件修改时间）。
 pub fn parse_text(text: &str, ext: &str, fallback: Option<&str>) -> Vec<ImportedMemo> {
     let ext = ext.trim_start_matches('.').to_ascii_lowercase();
@@ -197,7 +242,7 @@ pub fn collect_files(root: &Path) -> Result<Vec<PathBuf>, String> {
 fn is_importable(path: &Path) -> bool {
     matches!(
         extension_of(path).as_str(),
-        "md" | "markdown" | "txt" | "html" | "htm"
+        "md" | "markdown" | "txt" | "html" | "htm" | "json"
     )
 }
 
@@ -219,6 +264,7 @@ pub fn parse_flomo_html(html: &str) -> Vec<ImportedMemo> {
             out.push(ImportedMemo {
                 created_at,
                 content,
+                pinned_at: None,
             });
         }
         rest = &rest[end..];
@@ -246,6 +292,7 @@ fn pair_time_and_content(html: &str) -> Vec<ImportedMemo> {
             out.push(ImportedMemo {
                 created_at,
                 content,
+                pinned_at: None,
             });
         }
         rest = &after[ce..];
@@ -559,6 +606,45 @@ mod tests {
         assert_eq!(html_to_text("<p>&nbsp;空格</p>"), "空格");
         // 源文件里的缩进与换行不能漏进正文（HTML 会把连续空白折成一个空格）
         assert_eq!(html_to_text("\n    <p>a</p>\n    <p>b</p>\n  "), "a\nb");
+    }
+
+    #[test]
+    fn parse_json_export_keeps_timestamps_and_pinning() {
+        let json = r#"{
+  "app": "FMemos",
+  "version": "0.9.0",
+  "exportedAt": "2026-09-13 12:00:00",
+  "count": 2,
+  "memos": [
+    { "id": 1, "content": "普通一条 #读书", "createdAt": "2021-04-05 09:43:21",
+      "updatedAt": "2021-04-05 09:43:21", "pinnedAt": null, "tags": ["读书"] },
+    { "id": 2, "content": "置顶的一条", "createdAt": "2021-04-06 10:00:00",
+      "updatedAt": "2021-04-06 10:00:00", "pinnedAt": "2021-04-07 08:00:00", "tags": [] }
+  ]
+}"#;
+        let memos = parse_json_export(json).unwrap();
+        assert_eq!(memos.len(), 2);
+        assert_eq!(memos[0].created_at.as_deref(), Some("2021-04-05 09:43:21"));
+        assert_eq!(memos[0].pinned_at, None);
+        assert_eq!(memos[1].pinned_at.as_deref(), Some("2021-04-07 08:00:00"));
+        // 脏时间戳退回 None（由调用方兜底），不报错
+        let dirty = r#"{"app":"FMemos","memos":[{"content":"x","createdAt":"昨天","pinnedAt":"乱的"}]}"#;
+        let m = parse_json_export(dirty).unwrap();
+        assert_eq!(m[0].created_at, None);
+        assert_eq!(m[0].pinned_at, None);
+    }
+
+    #[test]
+    fn parse_json_export_rejects_non_export_json() {
+        // 非法 JSON
+        assert!(parse_json_export("{not json").is_err());
+        // 合法 JSON 但不是 FMemos 导出结构
+        assert!(parse_json_export(r#"{"hello": 1}"#).is_err());
+        assert!(parse_json_export(r#"[]"#).is_err());
+        // 合法导出（空 memos）不算错误
+        assert!(parse_json_export(r#"{"app":"FMemos","memos":[]}"#)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

@@ -1081,7 +1081,7 @@ pub fn import_path_impl(
 ) -> Result<ImportReport, String> {
     let files = import::collect_files(root)?;
     if files.is_empty() {
-        return Err("没有找到可导入的文件（支持 .md / .markdown / .txt / .html）".into());
+        return Err("没有找到可导入的文件（支持 .md / .markdown / .txt / .html / .json）".into());
     }
 
     // 已有正文的归一化集合：既做去重，也顺带挡住同一批里的重复内容
@@ -1101,13 +1101,19 @@ pub fn import_path_impl(
     let mut empty = 0usize;
     let mut skipped = 0usize;
     let mut samples: Vec<String> = Vec::new();
-    let mut pending: Vec<(Option<String>, String)> = Vec::new();
+    let mut pending: Vec<import::ImportedMemo> = Vec::new();
 
     for path in &files {
         let fallback = file_mtime_local(conn, path);
         let text = import::read_text(path)?;
         let ext = import::extension_of(path);
-        for memo in import::parse_text(&text, &ext, fallback.as_deref()) {
+        // JSON（FMemos 导出回灌）单独分派：解析失败要带上文件名报错，不能混进 Markdown 的「整段当一条」
+        let mut memos = if ext == "json" {
+            import::parse_json_export(&text).map_err(|e| format!("{}：{e}", path.display()))?
+        } else {
+            import::parse_text(&text, &ext, fallback.as_deref())
+        };
+        for memo in memos.drain(..) {
             total += 1;
             let content = memo.content.trim().to_string();
             let key = import::dedup_key(&content);
@@ -1123,25 +1129,40 @@ pub fn import_path_impl(
             if samples.len() < 5 {
                 samples.push(sample_line(&content));
             }
-            pending.push((memo.created_at, content));
+            pending.push(import::ImportedMemo {
+                created_at: memo.created_at,
+                content,
+                pinned_at: memo.pinned_at,
+            });
         }
     }
 
     let added = pending.len();
     if !dry_run && added > 0 {
         let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
-        for (created_at, content) in &pending {
-            let done = match created_at {
+        for memo in &pending {
+            let done = match &memo.created_at {
                 // 导入的时间戳是导出文件里的原始时间，要原样保留（不能用默认的 now）
                 Some(ts) => tx.execute(
                     "INSERT INTO memos (content, created_at, updated_at) VALUES (?1, ?2, ?2)",
-                    params![content, ts],
+                    params![memo.content, ts],
                 ),
-                None => tx.execute("INSERT INTO memos (content) VALUES (?1)", params![content]),
+                None => tx.execute(
+                    "INSERT INTO memos (content) VALUES (?1)",
+                    params![memo.content],
+                ),
             };
             done.map_err(|e| e.to_string())?;
             let id = tx.last_insert_rowid();
-            tags::sync_tags(&tx, id, content).map_err(|e| e.to_string())?;
+            // JSON 回灌时恢复置顶状态；其余来源没有这个字段
+            if let Some(pinned) = &memo.pinned_at {
+                tx.execute(
+                    "UPDATE memos SET pinned_at = ?1 WHERE id = ?2",
+                    params![pinned, id],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            tags::sync_tags(&tx, id, &memo.content).map_err(|e| e.to_string())?;
         }
         tx.commit().map_err(|e| e.to_string())?;
     }
@@ -1720,6 +1741,76 @@ mod tests {
             list_memos_impl(&conn, None, None, false, None).unwrap().len(),
             4
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn json_export_reimports_with_pinning() {
+        // 导出 → 空库回灌：时间戳、置顶、标签都要活着回来
+        let conn = setup();
+        create_memo_impl(&conn, "第一条 #读书").unwrap();
+        create_memo_impl(&conn, "第二条").unwrap();
+        let original = list_memos_impl(&conn, None, None, false, None).unwrap();
+        assert_eq!(original.len(), 2);
+        let src_pinned = original.iter().find(|m| m.content == "第二条").unwrap();
+        let src_normal = original.iter().find(|m| m.content == "第一条 #读书").unwrap();
+        conn.execute(
+            "UPDATE memos SET pinned_at = '2021-04-07 08:00:00' WHERE id = ?1",
+            params![src_pinned.id],
+        )
+        .unwrap();
+
+        // 导出 JSON 并写进临时目录
+        let filter = ExportFilter {
+            tag: None,
+            query: None,
+            untagged: false,
+            date: None,
+        };
+        let (json, count) = build_export_json(&conn, &filter).unwrap();
+        assert_eq!(count, 2);
+        let dir = tests_support::temp_dir("json-reimport");
+        std::fs::write(dir.join("backup.json"), &json).unwrap();
+
+        // 空库回灌：预览与写入都识别出 2 条
+        let fresh = setup();
+        let preview = import_path_impl(&fresh, &dir, true).unwrap();
+        assert_eq!((preview.total, preview.added), (2, 2));
+        let report = import_path_impl(&fresh, &dir, false).unwrap();
+        assert_eq!(report.added, 2);
+
+        let reimported = list_memos_impl(&fresh, None, None, false, None).unwrap();
+        assert_eq!(reimported.len(), 2);
+        let back_pinned = reimported.iter().find(|m| m.content == "第二条").unwrap();
+        let back_normal = reimported
+            .iter()
+            .find(|m| m.content == "第一条 #读书")
+            .unwrap();
+        // 时间戳原样保留，置顶状态恢复
+        assert_eq!(back_pinned.created_at, src_pinned.created_at);
+        assert_eq!(
+            back_pinned.pinned_at.as_deref(),
+            Some("2021-04-07 08:00:00")
+        );
+        assert_eq!(back_normal.created_at, src_normal.created_at);
+        assert_eq!(back_normal.pinned_at, None);
+        // 标签从正文重新解析进了 memo_tags
+        assert_eq!(
+            list_memos_impl(&fresh, Some("读书".into()), None, false, None)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // 重复回灌：全部命中去重，一条不进
+        let again = import_path_impl(&fresh, &dir, false).unwrap();
+        assert_eq!((again.added, again.skipped), (0, 2));
+
+        // 坏 JSON 带着文件名报错，而不是被当成一条奇怪笔记吞进去
+        std::fs::write(dir.join("bad.json"), "{oops").unwrap();
+        let err = import_path_impl(&fresh, &dir, true).unwrap_err();
+        assert!(err.contains("bad.json"), "错误信息应包含文件名：{err}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -169,8 +169,8 @@ export default function SettingsModal({
             multiple: false,
             filters: [
               {
-                name: "Markdown / 文本 / flomo 导出",
-                extensions: ["md", "markdown", "txt", "html", "htm"],
+                name: "Markdown / 文本 / flomo 导出 / FMemos 备份",
+                extensions: ["md", "markdown", "txt", "html", "htm", "json"],
               },
             ],
           });
@@ -335,7 +335,8 @@ export default function SettingsModal({
         <div className="settings-section">
           <div className="settings-label">导入</div>
           <p className="settings-desc">
-            从 flomo 导出的 HTML、或 Markdown / 纯文本文件（整个文件夹也行）批量倒进 FMemos。
+            从 flomo 导出的 HTML、Markdown / 纯文本文件（整个文件夹也行）、或 FMemos 导出的
+            JSON 备份（回灌会原样恢复时间戳与置顶状态）。
             按正文去重，重复导入同一个文件不会翻倍；真正写入前会先给出条数预览让你确认。
           </p>
           <div className="settings-actions">
