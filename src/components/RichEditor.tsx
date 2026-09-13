@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties, type RefObject } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 import {
   EditorContent,
   NodeViewWrapper,
@@ -15,6 +15,7 @@ import { Extension, Mark, Node, markInputRule, markPasteRule, mergeAttributes } 
 import Suggestion, { type SuggestionProps } from "@tiptap/suggestion";
 import MemoImage from "./MemoImage";
 import { docToMd, mdToDoc } from "../lib/tiptap-md";
+import { uploadImageFile } from "../lib/useImagePaste";
 
 /**
  * TipTap 所见即所得编辑器（0.12.0 起，替代 TagTextarea）：
@@ -39,6 +40,10 @@ interface Props {
   onKeyDown?: (e: KeyboardEvent) => boolean;
   /** 编辑器实例外泄：父组件用它聚焦 / 插入图片 */
   editorRef?: RefObject<Editor | null>;
+  /** 编辑区下方显示格式工具栏（标签 / 加粗 / 代码 / 列表 / 任务 / 图片） */
+  toolbar?: boolean;
+  /** 图片上传失败等提示 */
+  onError?: (message: string) => void;
 }
 
 /* ---------------- 自定义扩展 ---------------- */
@@ -216,6 +221,8 @@ export default function RichEditor({
   autoFocus,
   onKeyDown,
   editorRef,
+  toolbar,
+  onError,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [suggest, setSuggest] = useState<SuggestState | null>(null);
@@ -278,6 +285,7 @@ export default function RichEditor({
   return (
     <div className="rich-editor" ref={wrapRef}>
       <EditorContent editor={editor} />
+      {toolbar && editor && <EditorToolbar editor={editor} onError={onError} />}
       {suggest && editor && (
         <SuggestPopup
           state={suggest}
@@ -289,6 +297,157 @@ export default function RichEditor({
           onHover={(i) => setSuggest({ ...suggest, active: i })}
         />
       )}
+    </div>
+  );
+}
+
+/* ---------------- 格式工具栏 ---------------- */
+
+/** 线性描边小图标，currentColor 跟随主题；统一 16×16 视窗 */
+function Icon({ d, extra }: { d: string; extra?: ReactNode }) {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d={d} />
+      {extra}
+    </svg>
+  );
+}
+
+const ICONS = {
+  tag: "M2 8.5 7.5 14 14 7.5 13 2 7.5 2z",
+  bold: "M4.5 2.5h4a2.5 2.5 0 0 1 0 5h-4zM4.5 7.5h5a2.75 2.75 0 0 1 0 5.5h-5z",
+  code: "M5.5 4.5 2 8l3.5 3.5 M10.5 4.5 14 8l-3.5 3.5",
+  ul: "M5.5 4h8 M5.5 8h8 M5.5 12h8",
+  ol: "M6 4h7.5 M6 8h7.5 M6 12h7.5",
+  task: "M3 3.5h10v9H3z M5.5 8l1.8 1.8L10.5 6",
+  image: "M2 3.5h12v9H2z M5 7a1.2 1.2 0 1 0 0-2.4A1.2 1.2 0 0 0 5 7z M14 10l-3.5-3L5 12.5",
+} as const;
+
+/**
+ * 编辑区下方的格式工具栏。全部按钮 onMouseDown + preventDefault：
+ * 点击不抢编辑器焦点，命令作用在当前光标 / 选区上。
+ */
+function EditorToolbar({ editor, onError }: { editor: Editor; onError?: (message: string) => void }) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+
+  const pickImage = (files: FileList | null) => {
+    const file = files?.[0];
+    if (file) {
+      setUploading(true);
+      uploadImageFile(file, onError)
+        .then((token) => {
+          if (token) {
+            const m = /^!\[([^\]]*)\]\(image:\/\/(\d+)\)$/.exec(token);
+            if (m) insertImageRef(editor, Number(m[2]), m[1] || "图片");
+          }
+        })
+        .finally(() => setUploading(false));
+    }
+    // 允许重复选择同一文件
+    if (fileRef.current) fileRef.current.value = "";
+  };
+
+  const btn = (active: boolean, label: string, onClick: () => void, icon: ReactNode) => (
+    <button
+      type="button"
+      className={"tb-btn" + (active ? " active" : "")}
+      title={label}
+      aria-label={label}
+      // mousedown 阶段阻止默认行为：编辑器不丢焦点，命令作用于当前选区
+      onMouseDown={(e) => {
+        e.preventDefault();
+        onClick();
+      }}
+    >
+      {icon}
+    </button>
+  );
+
+  return (
+    <div className="rich-toolbar">
+      {btn(
+        false,
+        "插入标签（#）",
+        () => editor.chain().focus().insertContent("#").run(),
+        <Icon d={ICONS.tag} extra={<circle cx="10.2" cy="5.8" r="1" fill="currentColor" stroke="none" />} />,
+      )}
+      {btn(
+        editor.isActive("bold"),
+        "加粗（**）",
+        () => editor.chain().focus().toggleBold().run(),
+        <Icon d={ICONS.bold} />,
+      )}
+      {btn(
+        editor.isActive("code"),
+        "行内代码（`）",
+        () => editor.chain().focus().toggleCode().run(),
+        <Icon d={ICONS.code} />,
+      )}
+      {btn(
+        editor.isActive("bulletList"),
+        "无序列表",
+        () => editor.chain().focus().toggleBulletList().run(),
+        <Icon
+          d={ICONS.ul}
+          extra={
+            <>
+              <circle cx="2.8" cy="4" r="0.9" fill="currentColor" stroke="none" />
+              <circle cx="2.8" cy="8" r="0.9" fill="currentColor" stroke="none" />
+              <circle cx="2.8" cy="12" r="0.9" fill="currentColor" stroke="none" />
+            </>
+          }
+        />,
+      )}
+      {btn(
+        editor.isActive("orderedList"),
+        "有序列表",
+        () => editor.chain().focus().toggleOrderedList().run(),
+        <Icon
+          d={ICONS.ol}
+          extra={
+            <text
+              x="1"
+              y="13.2"
+              fontSize="7.5"
+              fill="currentColor"
+              stroke="none"
+              fontFamily="inherit"
+            >
+              1
+            </text>
+          }
+        />,
+      )}
+      {btn(
+        editor.isActive("taskList"),
+        "任务清单",
+        () => editor.chain().focus().toggleTaskList().run(),
+        <Icon d={ICONS.task} />,
+      )}
+      {btn(
+        false,
+        uploading ? "图片上传中…" : "插入图片",
+        () => fileRef.current?.click(),
+        <Icon d={ICONS.image} />,
+      )}
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/*"
+        hidden
+        onChange={(e) => pickImage(e.target.files)}
+      />
     </div>
   );
 }

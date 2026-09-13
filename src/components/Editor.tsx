@@ -85,6 +85,8 @@ function Editor({ onCreate, focusSignal, allTags, onError }: Props) {
         allTags={allTags}
         placeholder="现在，记录点什么..."
         autoFocus
+        toolbar
+        onError={onError}
         onKeyDown={handleKeyDown}
         editorRef={editorRef}
       />

@@ -11,6 +11,40 @@ export const IMAGE_MAX_BYTES = 10 * 1024 * 1024;
  * 图片文件读成 base64 → api.addImage 入库 → 回调拿到 `![图片](image://id)` 引用，
  * 由调用方决定插到哪（RichEditor.insertImageRef 插成图片节点）。
  */
+/**
+ * 单张图片上传：读文件成 base64 → api.addImage 入库 → 返回 `![图片](image://id)` 引用。
+ * 非图片文件返回 null；超限 / 读取失败 / 入库失败走 onError（返回 null）。
+ * 粘贴 / 拖入（useImagePaste）和工具栏「插入图片」按钮共用这条链路。
+ */
+export async function uploadImageFile(
+  file: File,
+  onError?: (message: string) => void,
+): Promise<string | null> {
+  if (!file.type.startsWith("image/")) return null;
+  if (file.size > IMAGE_MAX_BYTES) {
+    onError?.(`图片「${file.name}」超过 10 MB 上限，请压缩后再试`);
+    return null;
+  }
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.onerror = () => reject(new Error(`读取图片「${file.name}」失败`));
+    reader.readAsDataURL(file);
+  }).catch((e) => {
+    onError?.(String(e.message ?? e));
+    return null;
+  });
+  if (dataUrl === null) return null;
+  const base64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
+  try {
+    const info = await api.addImage(base64, file.type || "image/png");
+    return `![图片](image://${info.id})`;
+  } catch (e) {
+    onError?.(`图片上传失败：${e}`);
+    return null;
+  }
+}
+
 export function useImagePaste(
   containerRef: RefObject<HTMLElement | null>,
   onImageRef: (token: string) => void,
@@ -29,28 +63,12 @@ export function useImagePaste(
 
     const upload = (file: File) => {
       if (!file.type.startsWith("image/")) return;
-      if (file.size > IMAGE_MAX_BYTES) {
-        onErrorRef.current?.(
-          `图片「${file.name}」超过 10 MB 上限，请压缩后再试`,
-        );
-        return;
-      }
       setUploading(true);
-      const reader = new FileReader();
-      reader.onload = () => {
-        const dataUrl = String(reader.result ?? "");
-        const base64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
-        api
-          .addImage(base64, file.type || "image/png")
-          .then((info) => onImageRefRef.current(`![图片](image://${info.id})`))
-          .catch((e) => onErrorRef.current?.(`图片上传失败：${e}`))
-          .finally(() => setUploading(false));
-      };
-      reader.onerror = () => {
-        setUploading(false);
-        onErrorRef.current?.(`读取图片「${file.name}」失败`);
-      };
-      reader.readAsDataURL(file);
+      uploadImageFile(file, (m) => onErrorRef.current?.(m))
+        .then((token) => {
+          if (token) onImageRefRef.current(token);
+        })
+        .finally(() => setUploading(false));
     };
 
     const onPaste = (e: Event) => {

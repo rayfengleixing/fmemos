@@ -286,6 +286,41 @@ nav .side-section:first-child {
   position: relative;
 }
 
+/* 编辑区下方格式工具栏：小号幽灵图标按钮，激活态主题色 */
+.rich-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border);
+}
+
+.tb-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+
+.tb-btn:hover {
+  color: var(--text);
+  background: var(--primary-alpha, rgba(0, 0, 0, 0.06));
+}
+
+.tb-btn.active {
+  color: var(--primary);
+  background: var(--primary-alpha, rgba(62, 180, 119, 0.12));
+}
+
 /* ProseMirror 编辑面：复用 .md 的排版口径，让「编辑中」和「卡片正文」零色差 */
 .rich-content {
   min-height: 96px;

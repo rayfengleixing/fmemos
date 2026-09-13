@@ -127,6 +127,7 @@ function MemoCard({
             allTags={allTags}
             placeholder="编辑这条 memo..."
             autoFocus
+            toolbar
             onChange={setDraft}
             editorRef={editEditorRef}
             onKeyDown={(e) => {
