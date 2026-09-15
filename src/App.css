@@ -381,8 +381,15 @@ nav .side-section:first-child {
 }
 
 .rich-content ul[data-type="taskList"] li > label {
-  flex-shrink: 0;
+  flex: 0 0 auto;
   margin-top: 4px;
+  user-select: none;
+}
+
+/* 内容区必须撑满剩余宽度：否则空任务行 / 行尾的 caret 因容器零宽而不显示 */
+.rich-content ul[data-type="taskList"] li > div {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .rich-content ul[data-type="taskList"] input[type="checkbox"] {
